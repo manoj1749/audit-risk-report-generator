@@ -201,20 +201,55 @@ def parse_cwip_ageing(table: TableData) -> CWIPAgeing | None:
         return None
 
 
+_CONTINGENT_LABEL_TERMS = [
+    "contingent", "claim", "not acknowledged", "guarantee", "undertaking",
+    "income tax", "service tax", "sales tax", "vat", "gst", "duty", "demand",
+]
+
+
+def _looks_like_contingent_table(table: TableData) -> bool:
+    """Reject unrelated tables that merely share a page with the note (note page
+    ranges are page-granular, so a note can carry a neighbouring note's tables)."""
+    labels = " ".join(str(row[0]).lower() for row in table.rows if row and row[0])
+    return any(term in labels for term in _CONTINGENT_LABEL_TERMS)
+
+
+def _find_year_cols(headers: list[str]) -> tuple[int | None, int | None]:
+    """Return (current_col, prior_col) from year-bearing headers, latest year first.
+
+    Movement schedules use a "prior | addition | deletion | current" layout, so the
+    current-year column is not necessarily the last one nor prior the one after it.
+    """
+    years: dict[int, int] = {}  # year -> column index
+    for i, header in enumerate(headers):
+        found = [int(y) for y in re.findall(r"(?:19|20)\d{2}", header or "")]
+        if found:
+            years.setdefault(max(found), i)
+    if len(years) < 2:
+        return None, None
+    ordered = sorted(years, reverse=True)
+    return years[ordered[0]], years[ordered[1]]
+
+
 def parse_contingent_liabilities(table: TableData) -> ContingentLiabilities | None:
     if _is_empty_table(table):
         logger.debug("parse_contingent_liabilities: empty table")
         return None
+    if not _looks_like_contingent_table(table):
+        logger.debug("parse_contingent_liabilities: labels do not look like contingent liabilities")
+        return None
     try:
-        total_col = _find_total_col(table.headers)
-        if total_col is None:
-            total_col = len(table.headers) - 1
-        prior_col = total_col + 1 if total_col + 1 < len(table.headers) else None
+        current_col, prior_col = _find_year_cols(table.headers)
+        if current_col is None:
+            current_col = _find_total_col(table.headers)
+            if current_col is None:
+                current_col = len(table.headers) - 1
+            prior_col = current_col + 1 if current_col + 1 < len(table.headers) else None
 
         income_tax = service_tax = gst = others = total = total_prior = None
         for row in table.rows:
             label = str(row[0]).lower() if row and row[0] else ""
-            val = parse_indian_number(row[total_col]) if total_col < len(row) else None
+            val = parse_indian_number(row[current_col]) if current_col < len(row) else None
             val_prior = parse_indian_number(row[prior_col]) if prior_col is not None and prior_col < len(row) else None
             if "income tax" in label:
                 income_tax = val
@@ -325,6 +360,24 @@ def parse_msmed_disclosure(table: TableData) -> MSMEDDisclosure | None:
         return None
 
 
+def _parse_rate_cell(cell) -> float | None:
+    """Parse a cell expected to hold an actuarial assumption rate (a small percentage).
+
+    A genuine discount rate or salary escalation rate is always well under 100%.
+    A misaligned column in a poorly-ruled table can otherwise hand this a monetary
+    figure from an adjacent column (this happened in testing: a rate of "14400"
+    was accepted from what should have been a ~7% cell) — reject anything outside
+    a plausible rate range rather than accept a clearly-wrong value.
+    """
+    value = parse_indian_number(cell)
+    if value is None:
+        return None
+    if abs(value) > 30:
+        logger.warning(f"Rejecting implausible actuarial rate value: {cell!r} -> {value}")
+        return None
+    return value
+
+
 def parse_actuarial_assumptions(table: TableData) -> ActuarialAssumptions | None:
     if _is_empty_table(table):
         logger.debug("parse_actuarial_assumptions: empty table")
@@ -342,12 +395,16 @@ def parse_actuarial_assumptions(table: TableData) -> ActuarialAssumptions | None
         discount_current = discount_prior = salary_current = salary_prior = None
         for row in table.rows:
             label = str(row[0]).lower() if row and row[0] else ""
-            if "discount rate" in label:
-                discount_current = parse_indian_number(row[current_col]) if current_col < len(row) else None
-                discount_prior = parse_indian_number(row[prior_col]) if prior_col < len(row) else None
-            elif "salary" in label:
-                salary_current = parse_indian_number(row[current_col]) if current_col < len(row) else None
-                salary_prior = parse_indian_number(row[prior_col]) if prior_col < len(row) else None
+            # Take only the first matching row for each assumption — a table covering
+            # multiple plans (e.g. Gratuity and Post-Retirement Medical) can repeat
+            # "discount rate" per plan, and a later row overwriting an already-valid
+            # earlier one has no basis for being more "correct".
+            if "discount rate" in label and discount_current is None and discount_prior is None:
+                discount_current = _parse_rate_cell(row[current_col]) if current_col < len(row) else None
+                discount_prior = _parse_rate_cell(row[prior_col]) if prior_col < len(row) else None
+            elif "salary" in label and salary_current is None and salary_prior is None:
+                salary_current = _parse_rate_cell(row[current_col]) if current_col < len(row) else None
+                salary_prior = _parse_rate_cell(row[prior_col]) if prior_col < len(row) else None
 
         if discount_current is None and discount_prior is None:
             return None
