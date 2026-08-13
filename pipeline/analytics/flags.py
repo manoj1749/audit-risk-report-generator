@@ -85,9 +85,18 @@ def check_rou_material_increase(movements: dict[str, MovementRecord], total_asse
 def check_contingent_liability_jump(
     contingent: ContingentLiabilities | None, total_equity: float | None
 ) -> AuditFlag | None:
-    if contingent and contingent.total is not None and contingent.total_prior is not None and total_equity:
-        increase = contingent.total - contingent.total_prior
-        if increase > total_equity * 0.05:
+    """Fires on either a material YoY increase, or a large absolute exposure —
+    a contingent liability total that's already a big fraction of equity is a
+    real risk worth flagging even in a year where it didn't move much further."""
+    if contingent and contingent.total is not None and total_equity:
+        increase = (
+            contingent.total - contingent.total_prior
+            if contingent.total_prior is not None else None
+        )
+        exposure_pct = contingent.total / total_equity * 100
+        increase_material = increase is not None and increase > total_equity * 0.05
+        exposure_material = exposure_pct > 25
+        if increase_material or exposure_material:
             return AuditFlag(
                 flag_id="CONTINGENT_LIABILITY_JUMP",
                 area="Contingent Liabilities",
@@ -96,13 +105,18 @@ def check_contingent_liability_jump(
                     "current_total": contingent.total,
                     "prior_total": contingent.total_prior,
                     "increase": increase,
+                    "exposure_pct_of_equity": exposure_pct,
                     "income_tax": contingent.income_tax,
                     "gst": contingent.gst,
                     "service_tax": contingent.service_tax,
                 },
                 note_ids=["27"],
                 standard_query="contingent liability disclosure provision Ind AS 37",
-                triggered_by="Contingent liabilities increased by more than 5% of equity",
+                triggered_by=(
+                    "Contingent liabilities increased by more than 5% of equity"
+                    if increase_material else
+                    "Contingent liabilities are a large absolute exposure relative to equity (>25%)"
+                ),
             )
     return None
 
@@ -123,6 +137,23 @@ def check_other_financial_assets_surge(movements: dict[str, MovementRecord], tot
 
 
 # ── MEDIUM SEVERITY ────────────────────────────────────────────────
+
+
+def check_non_current_liabilities_surge(
+    movements: dict[str, MovementRecord], total_assets: float | None
+) -> AuditFlag | None:
+    m = movements.get("total_non_current_liabilities")
+    if m and m.pct_change is not None and m.pct_change > 50 and m.materiality_pct is not None and m.materiality_pct > 5:
+        return AuditFlag(
+            flag_id="NON_CURRENT_LIABILITIES_SURGE",
+            area="Non-Current Liabilities",
+            severity="Medium",
+            evidence={"current": m.current, "prior": m.prior, "pct_change": m.pct_change},
+            note_ids=[],
+            standard_query="non-current liabilities recognition disclosure Schedule III presentation",
+            triggered_by="Total non-current liabilities grew >50% and exceed 5% of total assets",
+        )
+    return None
 
 
 def check_receivables_revenue_mismatch(movements: dict[str, MovementRecord]) -> AuditFlag | None:
@@ -339,6 +370,7 @@ def generate_all_flags(
     flags.extend(check_first_occurrence_material(movements, total_assets))
 
     medium_checks = [
+        check_non_current_liabilities_surge(movements, total_assets),
         check_receivables_revenue_mismatch(movements),
         check_mse_payables_increase(movements, structured_tables.msmed_disclosure),
         check_prior_year_tax_recurring(tax_prior, current_tax),
