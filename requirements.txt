@@ -29,6 +29,7 @@ mlx-lm
 
 # Export
 python-docx
+matplotlib
 
 # Utilities
 httpx

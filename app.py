@@ -77,7 +77,7 @@ def run_pipeline(primary_file, excel_file) -> None:
         st.write("🔢 Normalizing financial data...")
         from pipeline.normalizer.line_item_mapper import map_all_items
         from pipeline.normalizer.table_extractor import extract_all_tables
-        mapped_items = map_all_items(extracted, excel_path)
+        mapped_items = map_all_items(extracted, excel_path, notes)
         structured_tables = extract_all_tables(notes)
         st.write(
             f"✅ Mapped {len([m for m in mapped_items.values() if m.canonical_key])} "
@@ -217,6 +217,12 @@ if st.session_state.report:
     c3.metric("Low Risk", report.summary["Low"])
     c4.metric("Total Observations", report.summary["total"])
 
+    from export.charts import generate_risk_distribution_chart
+    risk_chart = generate_risk_distribution_chart(report.summary)
+    if risk_chart:
+        chart_col, _ = st.columns([1, 2])
+        chart_col.image(risk_chart)
+
     tab_obs, tab_mov, tab_rat, tab_raw = st.tabs([
         f"Observations ({report.summary['total']})",
         "Key Movements",
@@ -235,6 +241,9 @@ if st.session_state.report:
             ):
                 st.markdown("**Observation**")
                 st.write(obs.observation)
+
+                if obs.note_ref:
+                    st.caption(f"📄 {obs.note_ref}")
 
                 col_a, col_b = st.columns(2)
                 with col_a:
@@ -265,6 +274,11 @@ if st.session_state.report:
                 reverse=True,
             )])
             st.dataframe(df, use_container_width=True, hide_index=True)
+
+            from export.charts import generate_movements_chart
+            movements_chart = generate_movements_chart(report.key_movements)
+            if movements_chart:
+                st.image(movements_chart)
         else:
             st.info("No significant movements detected.")
 
@@ -288,6 +302,11 @@ if st.session_state.report:
             "Prior": f"{prior:.2f}" if prior is not None else "-",
         } for name, curr, prior in ratio_rows])
         st.dataframe(df_ratios, use_container_width=True, hide_index=True)
+
+        from export.charts import generate_ratios_chart
+        ratios_chart = generate_ratios_chart(ratios)
+        if ratios_chart:
+            st.image(ratios_chart)
 
     with tab_raw:
         st.caption("All analytical flags triggered before observation generation")
