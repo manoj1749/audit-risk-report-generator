@@ -20,6 +20,7 @@ class ObservationResult(BaseModel):
     observation: str
     risk_rating: Literal["High", "Medium", "Low"]
     standard_reference: str
+    note_ref: str = ""  # e.g. "Notes 7(f), 14(a), 14(d)" — deterministic, from flag.note_ids, never LLM-generated
     recommendation: str
     evidence: dict = Field(default_factory=dict)
 

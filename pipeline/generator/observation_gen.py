@@ -30,6 +30,8 @@ _generation_lock = threading.Lock()
 
 _JSON_OBJECT_PATTERN = re.compile(r"\{.*\}", re.DOTALL)
 _NUMBER_TOKEN_PATTERN = re.compile(r"-?[\d,]+\.?\d*")
+_STANDARD_NAME_PATTERN = re.compile(r"^(Ind\s*AS\s*\d+|AS\s*\d+|SA\s*\d+|SQC\s*\d+)", re.IGNORECASE)
+_PARA_NUM_PATTERN = re.compile(r"\b\d+\.\d+(?:\.\d+)?\b")
 _RETRY_SUFFIX = (
     "\n\nIMPORTANT: Your previous response was not valid JSON. Return ONLY the "
     "JSON object described above — no code fences, no commentary, no extra text."
@@ -95,6 +97,69 @@ def _warn_on_number_mismatch(observation_text: str, evidence: dict, flag_id: str
                 )
 
 
+def _extract_standard_name(source_filename: str) -> str:
+    """Pull a short canonical standard name (e.g. 'Ind AS 109') from a source PDF filename."""
+    stem = source_filename.rsplit(".", 1)[0]
+    match = _STANDARD_NAME_PATTERN.match(stem)
+    if match:
+        return re.sub(r"\s+", " ", match.group(1)).strip()
+    return re.split(r"[-_]", stem)[0].strip()
+
+
+def _validate_standard_reference(standard_reference: str, chunks: list[RetrievedChunk]) -> str:
+    """Guardrail against citation hallucination.
+
+    The system prompt tells the model to only cite a standard/paragraph that
+    literally appears in the retrieved text, but a small local model doesn't
+    always obey that — e.g. it has cited a nonexistent 'Ind AS 77'. This
+    checks the model's claim against what was actually retrieved: the cited
+    standard name must be one of the retrieved sources, and any cited
+    paragraph number must literally appear in the retrieved text. If either
+    check fails, the reference is replaced with a safe citation built only
+    from the real retrieved source names — never from the model's own claim.
+    """
+    if not chunks:
+        return standard_reference
+
+    combined_text = " ".join(c.text for c in chunks)
+    candidate_names = [_extract_standard_name(c.source) for c in chunks]
+    name_matches = any(name and name.lower() in standard_reference.lower() for name in candidate_names)
+
+    para_tokens = _PARA_NUM_PATTERN.findall(standard_reference)
+    paras_grounded = all(tok in combined_text for tok in para_tokens) if para_tokens else True
+
+    if name_matches and paras_grounded:
+        return standard_reference
+
+    logger.warning(
+        f"standard_reference {standard_reference!r} not grounded in retrieved text "
+        f"(name_match={name_matches}, paragraphs_grounded={paras_grounded}) — "
+        f"replacing with a citation built from actual retrieved sources: {candidate_names}"
+    )
+    unique_names = list(dict.fromkeys(n for n in candidate_names if n))
+    return " / ".join(unique_names) if unique_names else standard_reference
+
+
+def _format_note_ref(note_ids: list[str]) -> str:
+    """Format a flag's note_ids deterministically, e.g. ['7f','14a'] -> 'Notes 7(f), 14(a)'.
+
+    Never LLM-generated — note_ids come straight from the deterministic flag rule,
+    so there's no hallucination risk here, unlike standard_reference.
+    """
+    if not note_ids:
+        return ""
+    formatted = []
+    for note_id in note_ids:
+        match = re.match(r"^(\d+)([a-zA-Z]*)$", note_id.strip())
+        if match:
+            number, letter = match.groups()
+            formatted.append(f"{number}({letter})" if letter else number)
+        else:
+            formatted.append(note_id)
+    label = "Note" if len(formatted) == 1 else "Notes"
+    return f"{label} {', '.join(formatted)}"
+
+
 def _run_generation(prompt: str) -> str:
     from mlx_lm import generate
     from mlx_lm.sample_utils import make_sampler
@@ -135,6 +200,15 @@ async def generate_observation(
         data = _parse_json_response(raw)
         if data is not None:
             try:
+                # risk_rating is never the model's call — it's already decided by the
+                # deterministic rule that triggered this flag. Overriding here (rather
+                # than trusting the model's own JSON field) is what keeps High/Medium/Low
+                # calibration matching pipeline/analytics/flags.py exactly.
+                data["risk_rating"] = flag.severity
+                data["standard_reference"] = _validate_standard_reference(
+                    data.get("standard_reference", ""), chunks
+                )
+                data["note_ref"] = _format_note_ref(flag.note_ids)
                 result = ObservationResult(**data, flag_id=flag.flag_id, evidence=flag.evidence)
                 _warn_on_number_mismatch(result.observation, flag.evidence, flag.flag_id)
                 return result
