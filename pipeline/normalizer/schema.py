@@ -102,3 +102,42 @@ CANONICAL_SCHEMA = {
 DISPLAY_LABELS = {
     key: variants[0].title() for key, variants in CANONICAL_SCHEMA.items()
 }
+
+# Which face statement each canonical key belongs to. Used to stop a label match
+# crossing statements — e.g. a cash flow statement's "(increase)/decrease in other
+# financial assets" adjustment line sharing wording with the balance sheet's actual
+# "other financial assets" balance, but representing a period movement, not a balance.
+_BALANCE_SHEET_KEYS = {
+    "cash_equivalents", "bank_balances_other", "trade_receivables", "inventories",
+    "current_investments", "other_financial_assets_current", "other_current_assets",
+    "loans_current", "total_current_assets",
+    "ppe_net", "cwip", "roa_net", "intangible_assets", "equity_method_investments",
+    "non_current_investments", "loans_non_current", "other_financial_assets_non_current",
+    "deferred_tax_assets", "income_tax_assets", "other_non_current_assets",
+    "total_non_current_assets", "total_assets",
+    "share_capital", "other_equity", "total_equity",
+    "borrowings_current", "lease_liabilities_current", "trade_payables_mse",
+    "trade_payables_others", "other_financial_liabilities_current",
+    "other_current_liabilities", "provisions_current", "total_current_liabilities",
+    "borrowings_non_current", "lease_liabilities_non_current",
+    "other_financial_liabilities_non_current", "provisions_non_current",
+    "deferred_tax_liabilities", "other_non_current_liabilities",
+    "total_non_current_liabilities", "total_liabilities",
+}
+_PNL_KEYS = {
+    "revenue_from_operations", "other_income", "total_income", "cost_of_services",
+    "employee_benefits_expense", "finance_costs", "depreciation_amortisation",
+    "other_expenses", "total_expenses", "pbt", "share_of_jv_profit", "current_tax",
+    "tax_prior_years", "deferred_tax_expense", "total_tax_expense", "pat",
+    "oci_defined_benefit", "oci_foreign_currency", "oci_equity_method", "total_oci",
+    "total_comprehensive_income", "basic_eps", "diluted_eps",
+}
+_CASH_FLOW_KEYS = {
+    "cfo", "cfi", "cff", "net_cash_change", "opening_cash", "closing_cash",
+}
+
+CANONICAL_STATEMENT_TYPE: dict[str, str] = {
+    **{k: "balance_sheet" for k in _BALANCE_SHEET_KEYS},
+    **{k: "pnl" for k in _PNL_KEYS},
+    **{k: "cash_flow" for k in _CASH_FLOW_KEYS},
+}

@@ -1,14 +1,18 @@
 """Three-stage line item mapping: exact match -> fuzzy match -> embedding match."""
+import re
 from pathlib import Path
 
 from loguru import logger
 from rapidfuzz import fuzz
 
 import config
-from models.financial import ExtractedDocument, MappedLineItem, TableData
+from models.financial import ExtractedDocument, MappedLineItem, NoteSection, TableData
 from pipeline.extractor.excel_extractor import extract_excel
 from pipeline.normalizer.schema import CANONICAL_SCHEMA
 from utils.text_utils import clean_label, extract_note_ref, parse_indian_number
+
+_FACE_STATEMENT_SHEET_TYPES = {"balance_sheet", "pnl", "cash_flow"}
+_NOTE_COLUMN_HEADER_PATTERN = re.compile(r"^(note|notes|schedule|schedules)\s*(no\.?|number)?$", re.IGNORECASE)
 
 _embedding_model = None
 _canonical_flat: list[tuple[str, str]] | None = None
@@ -60,6 +64,20 @@ def map_line_item(raw_label: str) -> tuple[str | None, float, str]:
     if not cleaned:
         return None, 0.0, "unknown"
 
+    # Negation override: Schedule III's standard trade payables disclosure format is
+    # "(a) dues to micro/small enterprises" vs "(b) dues to creditors OTHER THAN micro
+    # enterprises and small enterprises" -- the (b) variant literally contains the words
+    # "micro enterprises and small enterprises", so fuzzy matching (which can't detect
+    # negation) scores it as a near-exact match to the MSE variant, when it means the
+    # opposite. Route explicitly before fuzzy matching ever sees it.
+    if re.search(r"other than\s+micro", cleaned):
+        return "trade_payables_others", 1.0, "exact"
+    if (
+        "micro" in cleaned and "enterprise" in cleaned and "other than" not in cleaned
+        and ("due" in cleaned or "payable" in cleaned)
+    ):
+        return "trade_payables_mse", 1.0, "exact"
+
     # Stage 1: exact match
     for key, variants in CANONICAL_SCHEMA.items():
         if cleaned in variants:
@@ -100,9 +118,29 @@ def map_line_item(raw_label: str) -> tuple[str | None, float, str]:
     return None, 0.0, "unknown"
 
 
+def _find_note_column_indices(headers: list[str]) -> set[int]:
+    """Column indices whose header identifies them as a note-reference column
+    (e.g. "Note No.", "Note", "Schedule") rather than a value column."""
+    return {
+        i for i, h in enumerate(headers)
+        if h and _NOTE_COLUMN_HEADER_PATTERN.match(h.strip())
+    }
+
+
 def _parse_table_rows(table: TableData) -> list[tuple[str, float | None, float | None, str | None]]:
-    """Extract (label, current, prior, note_ref) tuples from a table's rows."""
+    """Extract (label, current, prior, note_ref) tuples from a table's rows.
+
+    A note-reference column (identified by its header, e.g. "Note No.") is
+    excluded from the value scan entirely. Without this, a bare note number
+    like "5" or "20" is just as parseable as a real figure, so it gets read
+    as the current-period value and every real value shifts one column to
+    the right — silently dropping the true prior-period figure. This was
+    found by comparing extracted values against a company's own note
+    disclosures: a "current" value of 5 for an ROU asset was literally the
+    row's Note 5 reference, not a balance.
+    """
     results = []
+    note_col_indices = _find_note_column_indices(table.headers)
     for row in table.rows:
         if not row:
             continue
@@ -115,7 +153,13 @@ def _parse_table_rows(table: TableData) -> list[tuple[str, float | None, float |
 
         note_ref = extract_note_ref(label)
         numeric_values: list[float] = []
-        for cell in row[1:]:
+        for i, cell in enumerate(row):
+            if i == 0:
+                continue
+            if i in note_col_indices:
+                if note_ref is None and cell is not None and str(cell).strip():
+                    note_ref = str(cell).strip()
+                continue
             if cell is None:
                 continue
             val = parse_indian_number(cell)
@@ -132,11 +176,36 @@ def _parse_table_rows(table: TableData) -> list[tuple[str, float | None, float |
     return results
 
 
-def _map_rows(rows: list[tuple[str, float | None, float | None, str | None]],
-               mapped: dict[str, MappedLineItem], idx_start: int) -> int:
+def _map_rows(
+    rows: list[tuple[str, float | None, float | None, str | None]],
+    mapped: dict[str, MappedLineItem],
+    idx_start: int,
+    allowed_statement_type: str | None = None,
+) -> int:
+    """Map extracted rows to canonical keys.
+
+    If `allowed_statement_type` is given (e.g. a sheet already classified as
+    'cash_flow'), a label match is only accepted when the canonical key it
+    resolved to actually belongs to that statement. This stops a cash flow
+    adjustment line like "(Increase)/decrease in other financial assets" from
+    being accepted as the balance sheet's "other financial assets" balance —
+    same wording, entirely different figure.
+    """
+    from pipeline.normalizer.schema import CANONICAL_STATEMENT_TYPE
+
     idx = idx_start
     for label, current, prior, note_ref in rows:
         canonical_key, confidence, method = map_line_item(label)
+        if (
+            canonical_key is not None
+            and allowed_statement_type is not None
+            and CANONICAL_STATEMENT_TYPE.get(canonical_key) != allowed_statement_type
+        ):
+            logger.debug(
+                f"Rejecting cross-statement match: {label!r} -> {canonical_key} "
+                f"(belongs to {CANONICAL_STATEMENT_TYPE.get(canonical_key)}, not {allowed_statement_type})"
+            )
+            canonical_key, confidence, method = None, 0.0, "unknown"
         mapped[f"{idx}:{label}"] = MappedLineItem(
             raw_label=label,
             canonical_key=canonical_key,
@@ -150,20 +219,60 @@ def _map_rows(rows: list[tuple[str, float | None, float | None, str | None]],
     return idx
 
 
-def map_all_items(extracted: ExtractedDocument, excel_path: str | None = None) -> dict[str, MappedLineItem]:
-    """Map every line item found in the PDF's tables (and optional Excel workbook) to the canonical schema."""
+def map_all_items(
+    extracted: ExtractedDocument,
+    excel_path: str | None = None,
+    notes: dict[str, NoteSection] | None = None,
+) -> dict[str, MappedLineItem]:
+    """Map every line item found in the face-statement tables (and optional Excel
+    workbook) to the canonical schema.
+
+    Scoping matters: a note-level table (a JV/subsidiary breakdown, an actuarial
+    schedule, a related-party disclosure, an ageing schedule) very often has rows
+    whose labels superficially match a canonical face-statement key (e.g. "Total
+    Current Assets" inside a joint venture's own mini balance sheet) but whose
+    figures belong to something else entirely. Those tables must never feed this
+    generic mapper — they're handled by the dedicated structured parsers in
+    table_extractor.py instead, each scoped to its own specific note. So:
+
+    - Any PDF page that falls inside a parsed note's page range is skipped here.
+      If `notes` isn't supplied (no notes section detected), no page is excluded —
+      best-effort fallback for documents with no detectable notes structure.
+    - Any Excel sheet not classified as balance_sheet/pnl/cash_flow is skipped,
+      unless none of the sheets matched a known type (in which case naming may
+      just be unusual, and excluding everything would be worse than the risk of
+      including an unrecognized sheet).
+    """
     mapped: dict[str, MappedLineItem] = {}
     idx = 0
 
+    note_pages: set[int] = set()
+    if notes:
+        for note in notes.values():
+            note_pages.update(range(note.page_start, note.page_end + 1))
+
+    skipped_pages = 0
     for page in extracted.pages:
+        if page.page_num in note_pages:
+            skipped_pages += 1
+            continue
         for table in page.tables:
             idx = _map_rows(_parse_table_rows(table), mapped, idx)
+    if note_pages:
+        logger.info(f"Excluded {skipped_pages} note-covered page(s) from face-statement mapping")
 
     if excel_path and Path(excel_path).exists():
         workbook = extract_excel(excel_path)
+        has_recognized_sheet = any(s.sheet_type in _FACE_STATEMENT_SHEET_TYPES for s in workbook.sheets)
         for sheet in workbook.sheets:
+            if has_recognized_sheet and sheet.sheet_type not in _FACE_STATEMENT_SHEET_TYPES:
+                logger.debug(
+                    f"Skipping non-face-statement sheet '{sheet.sheet_name}' (type={sheet.sheet_type})"
+                )
+                continue
             table = TableData(headers=sheet.headers, rows=[list(r) for r in sheet.rows], page_num=0)
-            idx = _map_rows(_parse_table_rows(table), mapped, idx)
+            statement_type = sheet.sheet_type if sheet.sheet_type in _FACE_STATEMENT_SHEET_TYPES else None
+            idx = _map_rows(_parse_table_rows(table), mapped, idx, allowed_statement_type=statement_type)
 
     logger.info(
         f"Mapped {sum(1 for m in mapped.values() if m.canonical_key)} of {len(mapped)} line items"
