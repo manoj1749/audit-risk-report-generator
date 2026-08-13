@@ -6,7 +6,18 @@ from loguru import logger
 from models.financial import ExtractedDocument, NoteSection, TableData
 
 NOTE_HEADER_PATTERN = re.compile(
-    r"^(?:Note|NOTE)\s+(\d+)\s*(?:[\(\[]\s*([a-zA-Z])\s*[\)\]])?\s*[:\.]?\s*(.+)?$",
+    r"^(?:Note|NOTE)\s+(\d+)\s*(?:[\(\[]\s*([a-zA-Z])\s*[\)\]])?\s*[:\.]?\s*"
+    r"([^\n]*?)(?=\s+(?:Note|NOTE)\s+\d|$)",
+    re.MULTILINE,
+)
+
+# Two-column ("2-up") annual-report pages collapse both columns into a single text
+# line, so the right column's note headers start mid-line. An explicit ':' is
+# required here so that cross-references ("as per Note 34") are not mistaken for
+# headers.
+INLINE_NOTE_HEADER_PATTERN = re.compile(
+    r"(?<=\S)\s+(?:Note|NOTE)\s+(\d+)\s*(?:[\(\[]\s*([a-zA-Z])\s*[\)\]])?\s*:\s*"
+    r"([^\n]*?)(?=\s+(?:Note|NOTE)\s+\d|$)",
     re.MULTILINE,
 )
 
@@ -35,12 +46,30 @@ def _offset_to_page(offset: int, page_offsets: list[tuple[int, int, int]]) -> in
     return page_offsets[-1][0] if page_offsets else 1
 
 
-def _tables_for_page_range(pages, page_start: int, page_end: int) -> list[TableData]:
-    tables: list[TableData] = []
+def _table_key(table: TableData) -> tuple:
+    return (
+        tuple(table.headers),
+        tuple(tuple(str(cell) for cell in row) for row in table.rows),
+    )
+
+
+def _add_tables(target: list[TableData], pages, page_start: int, page_end: int) -> None:
+    """Append the page range's tables to `target`, skipping ones already collected.
+
+    Reports frequently repeat a page verbatim (and the continuation branch below
+    revisits pages already attached), which otherwise attaches the very same
+    table to a note several times over.
+    """
+    seen = {_table_key(t) for t in target}
     for page in pages:
-        if page_start <= page.page_num <= page_end:
-            tables.extend(page.tables)
-    return tables
+        if not page_start <= page.page_num <= page_end:
+            continue
+        for table in page.tables:
+            key = _table_key(table)
+            if key in seen:
+                continue
+            seen.add(key)
+            target.append(table)
 
 
 def parse_notes(extracted: ExtractedDocument) -> dict[str, NoteSection]:
@@ -58,7 +87,11 @@ def parse_notes(extracted: ExtractedDocument) -> dict[str, NoteSection]:
         logger.warning("Could not find 'Notes to Financial Statements/Accounts' transition; "
                         "scanning entire document for note headers")
 
-    matches = list(NOTE_HEADER_PATTERN.finditer(text, pos=search_start))
+    matches = sorted(
+        list(NOTE_HEADER_PATTERN.finditer(text, pos=search_start))
+        + list(INLINE_NOTE_HEADER_PATTERN.finditer(text, pos=search_start)),
+        key=lambda m: m.start(),
+    )
     if not matches:
         logger.warning("No note headers detected in document")
         return {}
@@ -86,17 +119,19 @@ def parse_notes(extracted: ExtractedDocument) -> dict[str, NoteSection]:
             existing = notes[note_id]
             existing.raw_text += "\n" + raw_text
             existing.page_end = max(existing.page_end, page_end)
-            existing.tables.extend(_tables_for_page_range(extracted.pages, page_start, page_end))
+            _add_tables(existing.tables, extracted.pages, page_start, page_end)
             continue
 
-        notes[note_id] = NoteSection(
+        note = NoteSection(
             note_id=note_id,
             full_id=full_id,
             title=title or full_id,
             raw_text=raw_text,
-            tables=_tables_for_page_range(extracted.pages, page_start, page_end),
+            tables=[],
             page_start=page_start,
             page_end=page_end,
         )
+        _add_tables(note.tables, extracted.pages, page_start, page_end)
+        notes[note_id] = note
 
     return notes
