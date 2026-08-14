@@ -110,19 +110,32 @@ if [ ! -f ".env" ]; then
     echo "✅ Created .env from .env.example (defaults are fine — no API keys needed)"
 fi
 
-# 8. Standards index — required, and not in git (see .gitignore).
+# 8. Standards index — required, and not in git (see .gitignore: the standards
+#    PDFs are ICAI/MCA-licensed material, kept out of the public repo).
+STANDARDS_INDEX_DRIVE_ID="1hdLopPijZDlzZNNcFlFcA3cDqTVrrwe6"
+
 if [ ! -f "data/chroma_db/chroma.sqlite3" ]; then
     echo "⚠️  Standards index (data/chroma_db) not found."
     if ls data/raw_zips/*.zip >/dev/null 2>&1; then
         echo "📚 Building it now from data/raw_zips (one-time, ~10-20 min)..."
         python scripts/setup_standards.py
     else
-        echo "❌ data/raw_zips has no source ZIPs and data/chroma_db is empty — the app"
-        echo "   cannot run without the indexed standards corpus. Copy 'data/standards/'"
-        echo "   and 'data/chroma_db/' here from a machine where it's already built"
-        echo "   (they're gitignored, not in the repo — e.g. AirDrop or a zip transfer),"
-        echo "   then re-run this script."
-        exit 1
+        echo "📥 Downloading the prebuilt standards index (~83MB)..."
+        pip install --quiet gdown
+        ARCHIVE="$PROJECT_ROOT/.standards_index_download.zip"
+        if gdown "https://drive.google.com/uc?id=${STANDARDS_INDEX_DRIVE_ID}" -O "$ARCHIVE"; then
+            echo "📦 Extracting..."
+            unzip -q -o "$ARCHIVE" -d "$PROJECT_ROOT"
+            rm -f "$ARCHIVE"
+            echo "✅ Standards index downloaded and extracted"
+        else
+            rm -f "$ARCHIVE"
+            echo "❌ Download failed (no network, or the Drive link changed/lost access) and"
+            echo "   data/raw_zips has no source ZIPs either — the app cannot run without the"
+            echo "   indexed standards corpus. Copy 'data/standards/' and 'data/chroma_db/'"
+            echo "   here manually (AirDrop, zip transfer, etc.), then re-run."
+            exit 1
+        fi
     fi
 else
     echo "✅ Standards index found"
