@@ -3,21 +3,27 @@
 Free hosting for this app is constrained by one thing: the narrative LLM is a
 quantized 7B model (~4.7GB) plus an OCR engine and an embedding model on top.
 Most free PaaS tiers (Render, Railway, Fly.io) cap out around 512MB-1GB RAM —
-not enough. **Hugging Face Spaces' free CPU tier gives 2 vCPU / 16GB RAM**,
-runs Streamlit natively, and needs no credit card. That's what this guide sets up.
+not enough. **Hugging Face Spaces' free CPU tier gives 2 vCPU / 16GB RAM** and
+needs no credit card. That's what this guide sets up.
 
-The one thing that doesn't carry over from local dev: `mlx-lm` only runs on
-Apple Silicon (Metal). HF Spaces run on Linux, so the app auto-switches to a
-`llama.cpp` backend serving a GGUF build of the same base model
-(`Qwen2.5-7B-Instruct`) — see `config.LLM_BACKEND` and
-`pipeline/generator/observation_gen.py`. Nothing to configure locally; the
-backend is auto-detected by platform, and this is already wired up in the repo.
+Two things don't carry over unchanged from local dev:
+
+1. `mlx-lm` only runs on Apple Silicon (Metal). HF Spaces run on Linux, so the
+   app auto-switches to a `llama.cpp` backend serving a GGUF build of the same
+   base model (`Qwen2.5-7B-Instruct`) — see `config.LLM_BACKEND` and
+   `pipeline/generator/observation_gen.py`. Nothing to configure; the backend
+   is auto-detected by platform.
+2. The UI is Gradio, not Streamlit — HF's Space-creation wizard currently only
+   offers **Static** (no Python), **Gradio** (free), or **Docker** (gated
+   behind account verification on some accounts). Gradio is the one that's
+   both free and can run this Python backend, so `app.py` targets it directly
+   — same UI locally and hosted, no separate app to maintain.
 
 ## 1. Create the Space
 
 1. Go to https://huggingface.co/new-space
-2. Pick an owner/name, set **SDK: Streamlit**, **hardware: CPU basic (free)**, visibility as you like.
-3. This gives you a new git repo at `https://huggingface.co/spaces/<you>/<space-name>`, separate from this GitHub repo. HF also auto-generates a `README.md` there with YAML frontmatter (`sdk: streamlit`, `app_file: app.py`, etc.) — keep that frontmatter block, you can append this project's README content below it.
+2. Pick an owner/name, set **SDK: Gradio**, **hardware: CPU basic (free)**, visibility as you like.
+3. This gives you a new git repo at `https://huggingface.co/spaces/<you>/<space-name>`, separate from this GitHub repo. HF auto-generates a `README.md` there with YAML frontmatter (`sdk: gradio`, `app_file: app.py`, etc.) — keep that frontmatter block, you can append this project's README content below it.
 
 ## 2. Clone it and copy the project in
 

@@ -45,7 +45,7 @@ uses the llama.cpp/GGUF backend instead.
 ## Run
 
 ```bash
-streamlit run app.py
+python app.py
 ```
 
 Upload the annual report (required — PDF, Word `.docx`, or an image such as a scanned
@@ -66,7 +66,7 @@ extraction quality before running the full pipeline.
 
 ```
 audit-risk-report-generator/
-├── app.py                          # Streamlit entry point
+├── app.py                          # Gradio entry point
 ├── config.py                       # Settings, paths, constants
 ├── pipeline/
 │   ├── extractor/                  # Layer 1: PDF / Excel / DOCX extraction
