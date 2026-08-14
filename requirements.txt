@@ -24,8 +24,12 @@ rapidfuzz
 # Graph
 networkx
 
-# LLM (local, free, open-weight — no API key. Apple Silicon only; see README)
-mlx-lm
+# LLM (local, free, open-weight — no API key)
+# mlx-lm: fast Metal backend, Apple Silicon only.
+# llama-cpp-python: portable CPU backend (GGUF), used on Linux hosts e.g. HF Spaces.
+mlx-lm; sys_platform == "darwin" and platform_machine == "arm64"
+llama-cpp-python; sys_platform != "darwin" or platform_machine != "arm64"
+huggingface_hub
 
 # Export
 python-docx

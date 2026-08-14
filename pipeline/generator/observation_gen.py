@@ -1,12 +1,15 @@
 """Local, free, open-weight narrative generation: structured flag -> parsed observation.
 
-Runs entirely in-process via Apple's mlx-lm (no API key, no external service).
-The model only ever sees a FLAG + retrieved STANDARD TEXT + NOTE CONTENT and is
-instructed to cite only figures/references present in that input — it never
-sees the raw document, so it cannot introduce numbers that weren't already
-deterministically extracted by Layers 1-4.
+Runs entirely in-process (no API key, no external service), via one of two
+interchangeable backends selected by config.LLM_BACKEND: Apple's mlx-lm on
+Apple Silicon, or llama.cpp (a GGUF build of the same model) everywhere else,
+e.g. Hugging Face Spaces. The model only ever sees a FLAG + retrieved STANDARD
+TEXT + NOTE CONTENT and is instructed to cite only figures/references present
+in that input — it never sees the raw document, so it cannot introduce numbers
+that weren't already deterministically extracted by Layers 1-4.
 """
 import json
+import os
 import re
 import threading
 
@@ -19,7 +22,7 @@ from pipeline.generator.prompt_builder import SYSTEM_PROMPT, build_user_message
 from pipeline.retrieval.standards_retriever import retrieve_for_flag
 
 _model = None
-_tokenizer = None
+_tokenizer = None  # mlx backend only; llama.cpp handles chat templating internally
 _model_load_lock = threading.Lock()
 
 # A single local model instance is not safe for concurrent generate() calls —
@@ -45,19 +48,26 @@ def _get_model():
     if _model is None:
         with _model_load_lock:
             if _model is None:  # re-check: another thread may have loaded it while we waited
-                from mlx_lm import load
+                if config.LLM_BACKEND == "mlx":
+                    from mlx_lm import load
 
-                logger.info(f"Loading local LLM {config.LOCAL_LLM_MODEL} (first call only)...")
-                _model, _tokenizer = load(config.LOCAL_LLM_MODEL)
+                    logger.info(f"Loading local LLM {config.LOCAL_LLM_MODEL} via mlx (first call only)...")
+                    _model, _tokenizer = load(config.LOCAL_LLM_MODEL)
+                else:
+                    from llama_cpp import Llama
+
+                    logger.info(
+                        f"Loading local LLM {config.LOCAL_LLM_GGUF_REPO}/{config.LOCAL_LLM_GGUF_FILE} "
+                        "via llama.cpp (first call only)..."
+                    )
+                    _model = Llama.from_pretrained(
+                        repo_id=config.LOCAL_LLM_GGUF_REPO,
+                        filename=config.LOCAL_LLM_GGUF_FILE,
+                        n_ctx=config.LOCAL_LLM_CTX_TOKENS,
+                        n_threads=os.cpu_count(),
+                        verbose=False,
+                    )
     return _model, _tokenizer
-
-
-def _build_prompt(tokenizer, user_message: str) -> str:
-    messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": user_message},
-    ]
-    return tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
 
 
 def _parse_json_response(raw: str) -> dict | None:
@@ -160,19 +170,32 @@ def _format_note_ref(note_ids: list[str]) -> str:
     return f"{label} {', '.join(formatted)}"
 
 
-def _run_generation(prompt: str) -> str:
-    from mlx_lm import generate
-    from mlx_lm.sample_utils import make_sampler
-
+def _run_generation(user_message: str) -> str:
     model, tokenizer = _get_model()
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": user_message},
+    ]
     with _generation_lock:
-        return generate(
-            model,
-            tokenizer,
-            prompt=prompt,
-            max_tokens=config.LOCAL_LLM_MAX_TOKENS,
-            sampler=make_sampler(temp=config.LOCAL_LLM_TEMPERATURE),
-        )
+        if config.LLM_BACKEND == "mlx":
+            from mlx_lm import generate
+            from mlx_lm.sample_utils import make_sampler
+
+            prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+            return generate(
+                model,
+                tokenizer,
+                prompt=prompt,
+                max_tokens=config.LOCAL_LLM_MAX_TOKENS,
+                sampler=make_sampler(temp=config.LOCAL_LLM_TEMPERATURE),
+            )
+        else:
+            response = model.create_chat_completion(
+                messages=messages,
+                max_tokens=config.LOCAL_LLM_MAX_TOKENS,
+                temperature=config.LOCAL_LLM_TEMPERATURE,
+            )
+            return response["choices"][0]["message"]["content"]
 
 
 async def generate_observation(
@@ -180,19 +203,18 @@ async def generate_observation(
     chunks: list[RetrievedChunk],
     resolved_note: str,
 ) -> ObservationResult | None:
-    _, tokenizer = _get_model()
+    _get_model()
     user_message = build_user_message(flag, chunks, resolved_note)
 
     for attempt in range(2):
         message = user_message if attempt == 0 else user_message + _RETRY_SUFFIX
-        prompt = _build_prompt(tokenizer, message)
         try:
             # Called synchronously (not via asyncio.to_thread) so every mlx/Metal
             # call in the process happens on this one thread — mlx's GPU command
             # queue is not guaranteed safe across arbitrary thread hand-offs, and
             # there's no real concurrency to gain since generation is already
-            # serialized on one local model instance.
-            raw = _run_generation(prompt)
+            # serialized on one local model instance (true for llama.cpp too).
+            raw = _run_generation(message)
         except Exception as e:
             logger.error(f"Local generation failed for flag {flag.flag_id}: {e}")
             return None
