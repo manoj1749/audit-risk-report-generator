@@ -23,6 +23,15 @@ build of the same Qwen2.5-7B-Instruct model) everywhere else — see
 
 ## Setup (run once)
 
+**Quick start (macOS):** after cloning, place the ZIP files from Monali in
+`data/raw_zips/`, then either double-click **`Launch Audit Risk Report
+Generator.command`** in Finder, or run `./run.sh` — it checks/installs
+everything (interpreter, poppler, venv, Python deps, standards index),
+launches the app, and opens it in your browser. Re-running it is fast and
+safe; it skips anything already set up.
+
+Manual setup:
+
 ```bash
 git clone <repo>
 cd audit-risk-report-generator

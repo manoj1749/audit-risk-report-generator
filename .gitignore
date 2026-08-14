@@ -22,6 +22,9 @@ data/unmapped_items.log
 # OS
 .DS_Store
 
+# Claude Code local worktrees/state — not project content
+.claude/
+
 # Project scoping materials and real company test data — not for the repo
 context/
 test/
