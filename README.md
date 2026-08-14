@@ -15,8 +15,11 @@ Ind AS / Companies Act / ICAI provision.
 Numbers are extracted and flagged deterministically. An LLM is used only in the
 final step, to turn a triggered flag + retrieved standard text + note content into
 a narrative sentence — it never invents figures or standard references. That model
-runs locally and free via [mlx-lm](https://github.com/ml-explore/mlx-lm) (Apple
-Silicon), no API key and no external service required.
+runs locally and free, no API key and no external service required, via one of two
+interchangeable backends (`config.LLM_BACKEND`, auto-detected): [mlx-lm](https://github.com/ml-explore/mlx-lm)
+on Apple Silicon, or [llama.cpp](https://github.com/abetlen/llama-cpp-python) (a GGUF
+build of the same Qwen2.5-7B-Instruct model) everywhere else — see
+[`HOSTING.md`](HOSTING.md) for deploying the llama.cpp path to a free Hugging Face Space.
 
 ## Setup (run once)
 
@@ -33,11 +36,11 @@ cp .env.example .env
 python scripts/setup_standards.py
 ```
 
-The narrative-generation model (`mlx-community/Qwen2.5-7B-Instruct-4bit`, ~4.7GB)
-downloads automatically from Hugging Face on first use — no separate step needed.
-`mlx-lm` requires **Apple Silicon (M-series) macOS**; on other platforms, swap the
-model loading in `pipeline/generator/observation_gen.py` for a different local
-runtime (e.g. Ollama or `transformers`).
+The narrative-generation model (~4.7GB, either backend) downloads automatically
+from Hugging Face on first use — no separate step needed. Locally this defaults
+to `mlx-lm` on Apple Silicon; for hosting on Linux (no Metal available), see
+[`HOSTING.md`](HOSTING.md) for the free Hugging Face Spaces deployment, which
+uses the llama.cpp/GGUF backend instead.
 
 ## Run
 
