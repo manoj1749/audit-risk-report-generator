@@ -182,10 +182,31 @@ def export_report_docx(report: AuditReport) -> bytes:
 
     # Section 6: Suggested Next Steps
     document.add_heading("6. Suggested Next Steps", level=2)
-    for i, obs in enumerate(
-        [o for o in report.observations if o.risk_rating in ("High", "Medium")], 1
-    ):
-        document.add_paragraph(f"{i}. {obs.recommendation}", style="List Number")
+    high_obs = [o for o in report.observations if o.risk_rating == "High"]
+    medium_obs = [o for o in report.observations if o.risk_rating == "Medium"]
+
+    next_steps = []
+    if high_obs:
+        high_areas = ", ".join(sorted({o.area for o in high_obs}))
+        next_steps.append(
+            f"Prioritize closing the {len(high_obs)} High-risk item(s) above "
+            f"({high_areas}) — obtain the corroborating evidence listed in the "
+            f"Recommendation column before forming an audit opinion."
+        )
+    if medium_obs:
+        medium_areas = ", ".join(sorted({o.area for o in medium_obs}))
+        next_steps.append(
+            f"Follow up on the {len(medium_obs)} Medium-risk item(s) "
+            f"({medium_areas}) during fieldwork and document resolution in the "
+            f"working paper file."
+        )
+    next_steps.append(
+        "Cross-reference each resolved observation to its note reference "
+        "(Section 3) and retain the supporting documentation obtained as audit evidence."
+    )
+
+    for i, step in enumerate(next_steps, 1):
+        document.add_paragraph(f"{i}. {step}", style="List Number")
 
     buffer = io.BytesIO()
     document.save(buffer)
