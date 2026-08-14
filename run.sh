@@ -135,6 +135,11 @@ echo "   The first 'Run Audit Risk Analysis' click also downloads the local LLM"
 echo "   (~4.7GB, one-time). Press Ctrl+C here to stop the server."
 echo
 
+# python app.py runs as the literal foreground command (not backgrounded/waited)
+# so Ctrl+C's SIGINT — delivered by the terminal to the whole foreground process
+# group at once — reaches it directly. (Tried a trap+`wait $PID` version first;
+# macOS ships bash 3.2, where a trap does not reliably interrupt a `wait` on a
+# backgrounded child, so that approach silently left the server running.)
 (
     for _ in $(seq 1 30); do
         sleep 1
