@@ -65,6 +65,31 @@ def parse_indian_number(s: str | float | int | None) -> float | None:
     return -value if negative else value
 
 
+def format_indian_number(value: float | int, decimals: int = 0) -> str:
+    """Format a number with Indian comma grouping (last 3 digits, then pairs) —
+    the inverse of parse_indian_number's parsing, used when generating report
+    text. E.g. 176020 -> '1,76,020', not the Western '176,020'."""
+    negative = value < 0
+    value = abs(value)
+    if decimals:
+        int_part, _, dec_part = f"{value:.{decimals}f}".partition(".")
+    else:
+        int_part, dec_part = str(int(round(value))), ""
+
+    if len(int_part) > 3:
+        last3, rest = int_part[-3:], int_part[:-3]
+        groups = []
+        while len(rest) > 2:
+            groups.insert(0, rest[-2:])
+            rest = rest[:-2]
+        if rest:
+            groups.insert(0, rest)
+        int_part = ",".join(groups) + "," + last3
+
+    result = int_part + (f".{dec_part}" if dec_part else "")
+    return f"-{result}" if negative else result
+
+
 def clean_label(label: str) -> str:
     """Lowercase and strip a raw line-item label for matching.
 
