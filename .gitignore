@@ -13,11 +13,13 @@ data/raw_zips/*
 data/standards/*
 data/chroma_db/*
 data/uploads/*
+data/extraction_cache/*
 data/unmapped_items.log
 !data/raw_zips/.gitkeep
 !data/standards/.gitkeep
 !data/chroma_db/.gitkeep
 !data/uploads/.gitkeep
+!data/extraction_cache/.gitkeep
 
 # OS
 .DS_Store
