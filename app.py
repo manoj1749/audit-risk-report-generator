@@ -328,12 +328,12 @@ with gr.Blocks(title="audit-risk-report-generator") as demo:
         with gr.Row():
             with gr.Column(scale=2):
                 excel_file = gr.File(
-                    label="Base Financial Statements — Excel (recommended)",
+                    label="Financial Statements — Excel (optional, if not already in the PDF below)",
                     file_types=[".xlsx", ".xls"],
                     type="filepath",
                 )
                 primary_file = gr.File(
-                    label="Notes & Schedules — PDF, Word, or image (required)",
+                    label="Annual Report / Notes & Schedules — PDF, Word, or image (required)",
                     file_types=PRIMARY_DOC_TYPES,
                     type="filepath",
                 )
