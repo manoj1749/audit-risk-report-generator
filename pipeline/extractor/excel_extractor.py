@@ -5,7 +5,47 @@ from loguru import logger
 from models.financial import CellComment, ExtractedWorkbook, SheetData
 
 
-def _detect_sheet_type(sheet_name: str) -> str:
+# Content-fallback phrases, deliberately multi-word: a bare word like
+# "cash"/"balance"/"profit" shows up incidentally inside any statement (a
+# cash flow statement's own "bank balances" reconciliation line, a balance
+# sheet's "cash and cash equivalents" row, "other equity" referencing prior
+# profits) — matching those alone over a whole sheet's content misclassifies
+# too easily to be safe. These phrases are specific enough to a statement's
+# own structure that they don't turn up in the others.
+# Checked in this order: cash_flow's phrases are the most structurally
+# unique (a P&L or balance sheet never contains "cash flow from operating
+# activities" as a literal heading), so they're checked before pnl's —
+# an indirect-method cash flow statement reconciles from "profit before
+# tax" as its own opening line, which would otherwise false-positive as pnl
+# if checked first.
+_CONTENT_PHRASES: dict[str, tuple[str, ...]] = {
+    "cash_flow": (
+        "cash flow from operating", "cash flow from investing",
+        "cash flow from financing", "net increase/(decrease) in cash",
+    ),
+    "balance_sheet": ("balance sheet", "total equity and liabilities"),
+    "pnl": ("profit and loss", "statement of profit", "revenue from operations", "total income"),
+}
+
+
+def _detect_sheet_type(sheet_name: str, content_sample: str = "") -> str:
+    """Classify a sheet as balance_sheet/pnl/cash_flow/unknown so map_all_items
+    can stop a cash-flow reconciliation line like "(Increase)/decrease in
+    other financial assets" from being accepted as the balance sheet's
+    actual "other financial assets" balance (see _map_rows' cross-statement
+    guard) — same wording, entirely different figure.
+
+    Sheet name is checked first (cheap, usually reliable when a workbook was
+    authored directly in Excel), but real-world files are often produced by
+    a generic PDF-to-Excel conversion tool that names every sheet "Table 1",
+    "Table 2", etc. — meaningless for classification, even when the
+    statement's own title ("Balance Sheet", "Statement of Cash Flow"...) is
+    still sitting somewhere in the sheet's own content, or — as seen on a
+    real user-submitted file — the title is missing from the export
+    entirely and only the statement's own line items give it away. Falling
+    back to content (via _CONTENT_PHRASES) is what makes the guard actually
+    engage for those files instead of silently no-op'ing for the whole
+    workbook."""
     name = sheet_name.lower()
     if "balance" in name:
         return "balance_sheet"
@@ -13,6 +53,11 @@ def _detect_sheet_type(sheet_name: str) -> str:
         return "pnl"
     if "cash" in name:
         return "cash_flow"
+
+    content = content_sample.lower()
+    for stype, needles in _CONTENT_PHRASES.items():
+        if any(n in content for n in needles):
+            return stype
     return "unknown"
 
 
@@ -81,13 +126,25 @@ def extract_excel(excel_path: str) -> ExtractedWorkbook:
             )
             continue
 
+        # Content fallback for _detect_sheet_type: a statement's own title
+        # ("Balance Sheet as at...") usually appears in the first couple of
+        # rows when present at all, but some exports omit it entirely and
+        # start straight at the column header row — scanning the whole
+        # sheet (still small, well under a hundred rows for any of these
+        # statements) means a title-less P&L sheet still gets classified
+        # correctly from its own line items ("Profit before tax", "Revenue
+        # from Operations"), not just left unrecognized.
+        content_sample = " ".join(
+            str(cell) for row in all_rows for cell in row if cell is not None
+        )
+
         headers = [str(h) if h is not None else "" for h in all_rows[0]]
         rows = [list(row) for row in all_rows[1:]]
 
         sheets.append(
             SheetData(
                 sheet_name=sheet_name,
-                sheet_type=_detect_sheet_type(sheet_name),
+                sheet_type=_detect_sheet_type(sheet_name, content_sample),
                 headers=headers,
                 rows=rows,
                 comments=comments,
