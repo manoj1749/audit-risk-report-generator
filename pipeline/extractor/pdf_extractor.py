@@ -1,6 +1,7 @@
 """PDF and image extraction: pdfplumber for typed PDFs, PaddleOCR fallback for
 scanned PDFs and for standalone image uploads (JPG/PNG/etc.)."""
 import re
+import time
 
 import pdfplumber
 from loguru import logger
@@ -238,13 +239,24 @@ def _extract_scanned_pdf(pdf_path: str) -> list[PageContent]:
         logger.error(f"OCR dependencies not available: {e}")
         raise
 
-    images = convert_from_path(pdf_path, dpi=200)
+    with pdfplumber.open(pdf_path) as pdf:
+        total = len(pdf.pages)
+    logger.info(f"OCR: {total} page(s) to process (previously silent — no per-page progress at all)")
+
     pages: list[PageContent] = []
-    for i, image in enumerate(images):
+    for i in range(1, total + 1):
+        page_t0 = time.time()
+        # One page at a time, not the whole document up front: rendering
+        # every page's image buffer simultaneously before OCR even starts
+        # (the previous behavior) is real, avoidable memory pressure on a
+        # many-page scan — confirmed contributing to a silent OOM-pattern
+        # kill on a real ~40-page filing.
+        [image] = convert_from_path(pdf_path, dpi=200, first_page=i, last_page=i)
         text = _ocr_image_to_text(image)
         pages.append(
-            PageContent(page_num=i + 1, raw_text=text, tables=[], ocr=True)
+            PageContent(page_num=i, raw_text=text, tables=[], ocr=True)
         )
+        logger.info(f"OCR: page {i}/{total} done in {time.time() - page_t0:.1f}s")
     return pages
 
 
