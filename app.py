@@ -7,12 +7,17 @@ account verification. The pipeline underneath (Layers 1-5) is unchanged.
 import asyncio
 import io
 import json
+import os
+import queue
 import tempfile
+import threading
+import time
 from datetime import datetime
 from pathlib import Path
 
 import gradio as gr
 import pandas as pd
+from loguru import logger
 from PIL import Image
 
 PRIMARY_DOC_TYPES = [".pdf", ".docx", ".png", ".jpg", ".jpeg"]
@@ -136,7 +141,7 @@ def _ratios_dataframe(ratios) -> pd.DataFrame:
     } for name, curr, prior in ratio_rows])
 
 
-def run_pipeline(primary_path, excel_path):
+def run_pipeline(primary_path, excel_path, progress: gr.Progress = gr.Progress()):
     log_lines: list[str] = []
 
     def log(msg: str) -> str:
@@ -147,12 +152,21 @@ def run_pipeline(primary_path, excel_path):
         return (status_text,) + (gr.update(),) * (_N_OUTPUTS - 1)
 
     if not primary_path:
-        yield unchanged(log("❌ Please upload the Notes & Schedules document."))
+        yield unchanged(log("❌ Please upload the required document (Annual Report / Notes & Schedules)."))
         return
+
+    stage_t = time.time()
+
+    def _stage_done(stage_name: str) -> None:
+        nonlocal stage_t
+        now = time.time()
+        logger.info(f"STAGE_TIMING: {stage_name} took {now - stage_t:.1f}s")
+        stage_t = now
 
     try:
         yield unchanged(log("📄 Extracting document..."))
         extracted = _extract_primary_document(primary_path)
+        _stage_done("extraction")
         yield unchanged(log(f"✅ Extracted {extracted.total_pages} pages ({extracted.extraction_method})"))
 
         yield unchanged(log("🗂 Parsing notes structure..."))
@@ -160,6 +174,7 @@ def run_pipeline(primary_path, excel_path):
         from pipeline.segmenter.xref_graph import build_xref_graph
         notes = parse_notes(extracted)
         xref = build_xref_graph(notes)
+        _stage_done("note_segmentation")
         yield unchanged(log(f"✅ Found {len(notes)} notes, {xref.graph.number_of_edges()} cross-references"))
 
         yield unchanged(log("🔢 Normalizing financial data..."))
@@ -167,6 +182,7 @@ def run_pipeline(primary_path, excel_path):
         from pipeline.normalizer.table_extractor import extract_all_tables
         mapped_items = map_all_items(extracted, excel_path, notes)
         structured_tables = extract_all_tables(notes)
+        _stage_done("normalization")
         yield unchanged(log(
             f"✅ Mapped {len([m for m in mapped_items.values() if m.canonical_key])} "
             f"of {len(mapped_items)} line items"
@@ -181,6 +197,7 @@ def run_pipeline(primary_path, excel_path):
         ratios = compute_ratios(mapped_items)
         flags = generate_all_flags(movements, mapped_items, structured_tables, notes)
         flags += run_consistency_checks(structured_tables, notes, extracted.full_text)
+        _stage_done("analytics_flagging")
         yield unchanged(log(
             f"✅ {len(flags)} flags generated "
             f"({sum(1 for f in flags if f.severity == 'High')} High, "
@@ -190,7 +207,46 @@ def run_pipeline(primary_path, excel_path):
 
         yield unchanged(log(f"✍️ Generating {len(flags)} observations..."))
         from pipeline.generator.observation_gen import generate_all_observations
-        observations = asyncio.run(generate_all_observations(flags, notes, xref))
+
+        # CPU-only local-LLM generation can take minutes per observation, with
+        # nothing else to show progress on — run it off-thread so this generator
+        # can keep yielding a live per-observation timer instead of one opaque
+        # message for the whole (potentially 30-60min) batch.
+        progress_queue: queue.Queue = queue.Queue()
+        gen_result: dict = {}
+
+        def _progress_cb(done: int, total: int) -> None:
+            progress_queue.put((done, total))
+
+        def _run_generation() -> None:
+            try:
+                gen_result["observations"] = asyncio.run(
+                    generate_all_observations(flags, notes, xref, progress_cb=_progress_cb)
+                )
+            except Exception as e:
+                gen_result["error"] = e
+            finally:
+                progress_queue.put(None)
+
+        gen_thread = threading.Thread(target=_run_generation, daemon=True)
+        start_time = time.time()
+        gen_thread.start()
+
+        while True:
+            item = progress_queue.get()
+            if item is None:
+                break
+            done, total = item
+            mins, secs = divmod(int(time.time() - start_time), 60)
+            progress(done / total, desc=f"Observation {done}/{total} · {mins}m {secs:02d}s elapsed")
+            log_lines[-1] = f"✍️ Generating observation {done}/{total}… ({mins}m {secs:02d}s elapsed)"
+            yield unchanged("\n".join(log_lines))
+
+        gen_thread.join()
+        if "error" in gen_result:
+            raise gen_result["error"]
+        observations = gen_result["observations"]
+        _stage_done("llm_generation")
         yield unchanged(log(f"✅ Generated {len(observations)} observations"))
 
         from models.report import AuditReport
@@ -330,4 +386,9 @@ with gr.Blocks(title="audit-risk-report-generator") as demo:
 demo.queue()
 
 if __name__ == "__main__":
-    demo.launch()
+    # Cloud Run injects $PORT (default 8080) and requires binding 0.0.0.0;
+    # unset locally, so this falls back to Gradio's normal 127.0.0.1:7860.
+    demo.launch(
+        server_name=os.environ.get("GRADIO_SERVER_NAME", "127.0.0.1"),
+        server_port=int(os.environ.get("PORT", 7860)),
+    )
