@@ -13,6 +13,24 @@ from utils.text_utils import clean_label, extract_note_ref, parse_indian_number
 
 _FACE_STATEMENT_SHEET_TYPES = {"balance_sheet", "pnl", "cash_flow"}
 _NOTE_COLUMN_HEADER_PATTERN = re.compile(r"^(note|notes|schedule|schedules)\s*(no\.?|number)?$", re.IGNORECASE)
+_LEADING_DIGIT_SPLIT_PATTERN = re.compile(r"^(\d{1,2})\s+([\d,]+\.?\d*|\([\d,]+\.?\d*\))$")
+
+
+def _recover_split_leading_digit(cell_text: str) -> float | None:
+    """A PDF rendering quirk occasionally inserts a stray space right after a
+    number's leading 1-2 digits — confirmed on a real filing, a table cell
+    literally reads "6 6,152.58" where the true value is 66,152.58, not two
+    separate figures. parse_indian_number correctly refuses this as an
+    ambiguous multi-token cell (see its own docstring — that guard exists
+    for genuinely different concatenated values, e.g. several columns'
+    worth of figures merged into one cell by a bad table-grid detection).
+    This is a narrower, separate recovery that only fires for exactly this
+    shape: a bare 1-2 digit token immediately followed by a properly
+    comma/decimal-formatted number, not the general multi-value case."""
+    match = _LEADING_DIGIT_SPLIT_PATTERN.match(cell_text.strip())
+    if not match:
+        return None
+    return parse_indian_number(match.group(1) + match.group(2))
 
 _embedding_model = None
 _canonical_flat: list[tuple[str, str]] | None = None
@@ -163,6 +181,8 @@ def _parse_table_rows(table: TableData) -> list[tuple[str, float | None, float |
             if cell is None:
                 continue
             val = parse_indian_number(cell)
+            if val is None:
+                val = _recover_split_leading_digit(str(cell))
             if val is not None:
                 numeric_values.append(val)
             elif note_ref is None:
@@ -260,6 +280,9 @@ def map_all_items(
             idx = _map_rows(_parse_table_rows(table), mapped, idx)
     if note_pages:
         logger.info(f"Excluded {skipped_pages} note-covered page(s) from face-statement mapping")
+
+    if excel_path and not Path(excel_path).exists():
+        logger.warning(f"Excel path given but not found on disk, skipping: {excel_path}")
 
     if excel_path and Path(excel_path).exists():
         workbook = extract_excel(excel_path)

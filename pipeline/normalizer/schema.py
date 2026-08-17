@@ -38,7 +38,14 @@ CANONICAL_SCHEMA = {
     "borrowings_current": ["borrowings - current", "short term borrowings", "current borrowings",
                             "current maturities of long-term debt"],
     "lease_liabilities_current": ["lease liabilities - current"],
-    "trade_payables_mse": ["trade payables - micro and small", "dues to msme",
+    # "dues to msme" deliberately excluded: rapidfuzz's WRatio scores it a
+    # 85.5 match against "transfer to statutory reserve" (a Statement of
+    # Changes in Equity line, nothing to do with payables) — just over the
+    # FUZZY_MATCH_THRESHOLD of 85, confirmed on a real filing. The genuine
+    # MSE-payables case this variant was meant for is already covered by
+    # the exact-match override above (any label with "micro"+"enterprise"),
+    # which every real-world label observed so far actually uses.
+    "trade_payables_mse": ["trade payables - micro and small",
                             "micro enterprises and small enterprises"],
     "trade_payables_others": ["trade payables - others", "creditors other than micro"],
     "other_financial_liabilities_current": ["other financial liabilities - current"],

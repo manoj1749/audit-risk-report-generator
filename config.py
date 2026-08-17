@@ -113,7 +113,21 @@ CHUNK_OVERLAP_TOKENS = 100
 TOKENS_TO_WORDS = 0.75
 
 # Line item mapping thresholds
-FUZZY_MATCH_THRESHOLD = 85
+# FUZZY_MATCH_THRESHOLD was 85 until a systematic audit (comparing every
+# schema variant against every other, then checking real matches across 3
+# real filings) found rapidfuzz's WRatio sits at a ~85.5 "baseline
+# generosity" floor for medium-length financial-jargon phrases in general —
+# 848 cross-key collisions existed at threshold 85 vs. 46 at 90, and every
+# demonstrated real-world false positive tonight ("Fees and commission
+# income" -> inventories, "No. of shares" -> borrowings_current, "Cash
+# generated from operations" -> closing_cash, a document's own title line ->
+# cash_equivalents) scored exactly ~85.5, while genuine correct matches
+# clustered at 90+. Raising this to 90 was verified to eliminate that entire
+# class of noise with zero regression on the validated reference fixture,
+# and on one real filing it corrected a false-positive risk flag that had
+# been silently sourced from a cash-flow reconciliation line instead of the
+# real balance-sheet figure.
+FUZZY_MATCH_THRESHOLD = 90
 EMBEDDING_MATCH_THRESHOLD = 0.82
 FUZZY_LOWER_BOUND = 60
 

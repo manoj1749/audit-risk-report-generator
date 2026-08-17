@@ -7,10 +7,18 @@ _METHOD_PRIORITY = {"exact": 3, "fuzzy": 2, "embedding": 1, "unknown": 0}
 
 
 def _select_best(items: list[MappedLineItem]) -> MappedLineItem:
-    """Prefer an actual current value, then exact matches over fuzzy/embedding ones, then confidence."""
+    """Prefer an actual current value, then a candidate with BOTH current and
+    prior over one with only current — an exact match missing the prior
+    year is less useful for movement analysis than a fuzzy match that has
+    both, so completeness is ranked above match provenance, not after it —
+    then exact matches over fuzzy/embedding ones, then confidence."""
     with_current = [i for i in items if i.current_value is not None]
     pool = with_current or items
-    return max(pool, key=lambda i: (_METHOD_PRIORITY.get(i.method, 0), i.confidence))
+    return max(pool, key=lambda i: (
+        i.current_value is not None and i.prior_value is not None,
+        _METHOD_PRIORITY.get(i.method, 0),
+        i.confidence,
+    ))
 
 
 def get_canonical_values(mapped_items: dict[str, MappedLineItem]) -> dict[str, MappedLineItem]:
