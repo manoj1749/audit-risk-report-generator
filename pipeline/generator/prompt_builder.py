@@ -50,5 +50,41 @@ STANDARD TEXT (retrieved):
 {standard_text}
 
 NOTE CONTENT:
-{resolved_note_text[:3000] if resolved_note_text else 'Not available'}
+{resolved_note_text[:1800] if resolved_note_text else 'Not available'}
+"""
+
+
+# Used only by the templated generation path (observation/recommendation/
+# standard_reference are template-built, not model-generated — see
+# pipeline/generator/templates.py). This is the one place a model call
+# remains: checking whether the note text itself explains a fact that's
+# otherwise fully established from structured evidence. Much smaller prompt
+# than SYSTEM_PROMPT above (no evidence JSON, no retrieved standard text),
+# and a much smaller/cheaper output (one sentence or nothing).
+SYSTEM_PROMPT_ADDENDUM = """You are a senior statutory auditor reviewing a company's note disclosures.
+
+You will be given a FACT (an audit observation already established from the
+company's financial data) and the NOTE CONTENT relevant to it.
+
+Your only job: decide whether the note content adequately explains or gives
+context for the fact.
+
+Rules:
+1. If the note content clearly explains the reason behind the fact, respond
+   with exactly: NONE
+2. If the note content does NOT explain it (no reason given, or the note is
+   silent on the cause), respond with ONE short sentence (max 25 words)
+   noting this gap, e.g. "This decline is not explained by the note
+   content, which does not provide a clear reason for the reduction."
+3. Never invent a number, date, or reference not present in the note
+   content.
+4. Respond with ONLY the sentence or the word NONE — no other text, no
+   quotation marks, no commentary."""
+
+
+def build_addendum_message(fact: str, resolved_note_text: str) -> str:
+    return f"""FACT: {fact}
+
+NOTE CONTENT:
+{resolved_note_text[:1800] if resolved_note_text else 'Not available'}
 """
