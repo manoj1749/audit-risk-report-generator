@@ -1,5 +1,7 @@
 """PDF and image extraction: pdfplumber for typed PDFs, PaddleOCR fallback for
 scanned PDFs and for standalone image uploads (JPG/PNG/etc.)."""
+import re
+
 import pdfplumber
 from loguru import logger
 
@@ -8,11 +10,116 @@ from utils.text_utils import detect_company_name, detect_period
 
 _ocr_engine = None
 
+# Text-line table-reconstruction fallback (see _reconstruct_table_from_text):
+# a bare 1-2 digit integer with no comma/decimal reads as a note reference
+# ("19", "5", "14a"), not a value — real ₹ lakh figures in these statements
+# are virtually always either 3+ digits, or carry a decimal/comma/parens.
+_VALUE_TOKEN_PATTERN = re.compile(r"^\(?-?[\d,]+(\.\d+)?\)?$|^[-–—]$|^nil$", re.IGNORECASE)
+_NOTE_REF_TOKEN_PATTERN = re.compile(r"^\d{1,3}[a-zA-Z]?$")
+
+
+def _is_value_token(tok: str) -> bool:
+    if not _VALUE_TOKEN_PATTERN.match(tok):
+        return False
+    bare_digits = re.match(r"^-?(\d+)$", tok)
+    return not (bare_digits and len(bare_digits.group(1)) <= 2)
+
+
+def _is_note_ref_token(tok: str) -> bool:
+    return bool(_NOTE_REF_TOKEN_PATTERN.match(tok)) and not _is_value_token(tok)
+
+
+def _parse_text_line(line: str) -> tuple[str, str | None, list[str]] | None:
+    """Reconstruct (label, note_ref, [current, [prior]]) from one line of
+    plain extracted text, by taking up to 2 trailing value-shaped tokens and
+    (optionally) one note-reference token before them, treating everything
+    else as the label."""
+    tokens = line.split()
+    if len(tokens) < 2:
+        return None
+    values: list[str] = []
+    i = len(tokens)
+    while i > 0 and len(values) < 2 and _is_value_token(tokens[i - 1]):
+        values.insert(0, tokens[i - 1])
+        i -= 1
+    if not values:
+        return None
+    note_ref = None
+    if i > 0 and _is_note_ref_token(tokens[i - 1]):
+        # Subtotal/total rows never carry their own note reference in these
+        # statements — so a note-ref-shaped token immediately before one
+        # isn't a stray note ref at all, it's the true leading digit of the
+        # value, split off by a PDF rendering/kerning quirk (confirmed on a
+        # real filing: "Total assets 6 6,152.58" and "Total revenue... 1
+        # 6,636.52" both actually read 66,152.58 / 16,636.52 — treating
+        # "6"/"1" as note_ref silently truncated the real total by roughly
+        # an order of magnitude). Reattach it to the value instead of
+        # dropping it or leaving it stuck in the label.
+        if "total" in " ".join(tokens[:i - 1]).lower():
+            values[0] = tokens[i - 1] + values[0]
+        else:
+            note_ref = tokens[i - 1]
+        i -= 1
+    label = " ".join(tokens[:i]).strip()
+    if len(label) < 3:
+        return None
+    return label, note_ref, values
+
+
+def _reconstruct_table_from_text(text: str, page_num: int) -> TableData | None:
+    """Line-by-line fallback for when pdfplumber's grid-based table
+    extraction can't find real column boundaries on a page — confirmed on
+    real user-submitted filings where the "lines" strategy returned a
+    structurally-shaped table with every row's label column empty (columns
+    separated by whitespace alignment, not drawn ruling lines, so pdfplumber
+    misjudges the boundaries), and the "text" strategy fragmented single
+    words across spurious columns instead. Plain text extraction is
+    unaffected by either failure mode, so reconstructing rows from it
+    directly recovers the page.
+
+    Deliberately conservative about calling this a real statement page: a
+    handful of narrative sentences that happen to end in a number (a
+    section reference, a date) shouldn't get treated as a data table, so
+    this requires both a minimum row count and that a healthy fraction of
+    the page's actual lines parsed as rows."""
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    rows: list[list[str | None]] = []
+    for line in lines:
+        parsed = _parse_text_line(line)
+        if parsed is None:
+            continue
+        label, note_ref, values = parsed
+        row = [label, note_ref, *values] + ([None] if len(values) < 2 else [])
+        rows.append(row)
+    if len(rows) < 5 or len(rows) / max(len(lines), 1) < 0.25:
+        return None
+    return TableData(headers=["Particulars", "Note", "Current", "Prior"], rows=rows, page_num=page_num)
+
+
+def _label_fill_ratio(rows: list[list]) -> float:
+    if not rows:
+        return 0.0
+    filled = sum(1 for r in rows if r and r[0] not in (None, "") and str(r[0]).strip())
+    return filled / len(rows)
+
 
 def _get_ocr_engine():
     """Lazily initialize a single shared PaddleOCR instance (model load is expensive)."""
     global _ocr_engine
     if _ocr_engine is None:
+        # PaddleX (which paddleocr 3.x is built on) enables its oneDNN/MKL-DNN
+        # CPU backend by default, and that backend has a real crash on Cloud
+        # Run's x86_64 CPUs for at least one op in the PP-OCRv6 pipeline:
+        # "(Unimplemented) ConvertPirAttribute2RuntimeAttribute not support
+        # [pir::ArrayAttribute<pir::DoubleAttribute>]" — confirmed on a real
+        # scanned-PDF upload. Doesn't reproduce on Apple Silicon (a different
+        # backend entirely, never touches this code path), so this has to be
+        # disabled unconditionally rather than only where it's known to
+        # crash. Must be set before paddleocr/paddlex is ever imported — it's
+        # read once into a module-level constant at import time.
+        import os
+
+        os.environ.setdefault("PADDLE_PDX_ENABLE_MKLDNN_BYDEFAULT", "False")
         from paddleocr import PaddleOCR
 
         _ocr_engine = PaddleOCR(use_textline_orientation=True, lang="en")
@@ -67,6 +174,22 @@ def _extract_tables_from_page(page, page_num: int) -> list[TableData]:
         headers = [str(h) if h is not None else "" for h in cleaned[0]]
         rows = cleaned[1:]
         tables.append(TableData(headers=headers, rows=rows, page_num=page_num))
+
+    # Neither pdfplumber strategy found a usable grid (either nothing at
+    # all, or a table whose label column came back empty for every row —
+    # see _reconstruct_table_from_text for how/why). Try rebuilding from
+    # plain text instead of silently losing whatever's on this page.
+    if not tables or all(_label_fill_ratio(t.rows) < 0.5 for t in tables):
+        text = page.extract_text(x_tolerance=3, y_tolerance=3) or ""
+        reconstructed = _reconstruct_table_from_text(text, page_num)
+        best_existing = max((_label_fill_ratio(t.rows) for t in tables), default=0.0)
+        if reconstructed and _label_fill_ratio(reconstructed.rows) > best_existing:
+            logger.info(
+                f"Page {page_num}: table-grid extraction produced empty/no labels, "
+                "reconstructed rows from plain text instead"
+            )
+            return [reconstructed]
+
     return tables
 
 
