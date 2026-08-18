@@ -6,6 +6,7 @@ import time
 import pdfplumber
 from loguru import logger
 
+import config
 from models.financial import ExtractedDocument, PageContent, TableData
 from utils.text_utils import detect_company_name, detect_period
 
@@ -332,6 +333,19 @@ def _ocr_image_to_text(image) -> str:
     return "\n".join(lines)
 
 
+def _ocr_one_page(pdf_path: str, page_num: int) -> tuple[int, str, float]:
+    """Convert and OCR a single page. Module-level (not a closure) so it's
+    picklable for ProcessPoolExecutor — each worker process lazily builds its
+    own PaddleOCR engine on first call via the existing _get_ocr_engine()
+    singleton (each process has its own module state, so no sharing needed)."""
+    from pdf2image import convert_from_path
+
+    t0 = time.time()
+    [image] = convert_from_path(pdf_path, dpi=200, first_page=page_num, last_page=page_num)
+    text = _ocr_image_to_text(image)
+    return page_num, text, time.time() - t0
+
+
 def _extract_scanned_pdf(pdf_path: str) -> list[PageContent]:
     try:
         from pdf2image import convert_from_path
@@ -343,21 +357,45 @@ def _extract_scanned_pdf(pdf_path: str) -> list[PageContent]:
         total = len(pdf.pages)
     logger.info(f"OCR: {total} page(s) to process (previously silent — no per-page progress at all)")
 
-    pages: list[PageContent] = []
-    for i in range(1, total + 1):
-        page_t0 = time.time()
-        # One page at a time, not the whole document up front: rendering
-        # every page's image buffer simultaneously before OCR even starts
-        # (the previous behavior) is real, avoidable memory pressure on a
-        # many-page scan — confirmed contributing to a silent OOM-pattern
-        # kill on a real ~40-page filing.
-        [image] = convert_from_path(pdf_path, dpi=200, first_page=i, last_page=i)
-        text = _ocr_image_to_text(image)
-        pages.append(
-            PageContent(page_num=i, raw_text=text, tables=[], ocr=True)
-        )
-        logger.info(f"OCR: page {i}/{total} done in {time.time() - page_t0:.1f}s")
-    return pages
+    n_workers = config.OCR_N_WORKERS
+    if n_workers <= 1:
+        pages: list[PageContent] = []
+        for i in range(1, total + 1):
+            page_t0 = time.time()
+            # One page at a time, not the whole document up front: rendering
+            # every page's image buffer simultaneously before OCR even
+            # starts (the previous behavior) is real, avoidable memory
+            # pressure on a many-page scan — confirmed contributing to a
+            # silent OOM-pattern kill on a real ~40-page filing.
+            [image] = convert_from_path(pdf_path, dpi=200, first_page=i, last_page=i)
+            text = _ocr_image_to_text(image)
+            pages.append(
+                PageContent(page_num=i, raw_text=text, tables=[], ocr=True)
+            )
+            logger.info(f"OCR: page {i}/{total} done in {time.time() - page_t0:.1f}s")
+        return pages
+
+    # Parallel path (config.OCR_N_WORKERS > 1): PaddleOCR's CNN inference is
+    # compute-bound, unlike LLM decoding (memory-bandwidth-bound, confirmed
+    # not to benefit from multiple instances — see config.py's
+    # LOCAL_LLM_N_WORKERS comment), so this is worth testing independently
+    # rather than assuming that earlier negative result carries over.
+    from concurrent.futures import ProcessPoolExecutor, as_completed
+
+    texts: dict[int, str] = {}
+    done = 0
+    with ProcessPoolExecutor(max_workers=n_workers) as pool:
+        futures = [pool.submit(_ocr_one_page, pdf_path, i) for i in range(1, total + 1)]
+        for future in as_completed(futures):
+            page_num, text, elapsed = future.result()
+            texts[page_num] = text
+            done += 1
+            logger.info(f"OCR: page {page_num}/{total} done in {elapsed:.1f}s ({done}/{total} complete)")
+
+    return [
+        PageContent(page_num=i, raw_text=texts[i], tables=[], ocr=True)
+        for i in range(1, total + 1)
+    ]
 
 
 def extract_pdf(pdf_path: str) -> ExtractedDocument:

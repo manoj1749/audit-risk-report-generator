@@ -107,6 +107,17 @@ LOCAL_LLM_NARRATIVE_ADDENDUM = os.getenv("LOCAL_LLM_NARRATIVE_ADDENDUM", "1") ==
 LOCAL_LLM_MAX_TOKENS = int(os.getenv("LOCAL_LLM_MAX_TOKENS", "800"))
 LOCAL_LLM_TEMPERATURE = float(os.getenv("LOCAL_LLM_TEMPERATURE", "0.0"))
 
+# Scanned-PDF OCR page parallelism (pipeline/extractor/pdf_extractor.py).
+# 1 (default) preserves the original fully-sequential, one-page-at-a-time
+# behavior. >1 processes that many pages concurrently via a process pool —
+# unlike LOCAL_LLM_N_WORKERS (tried at 2, measured NO speedup: CPU-side LLM
+# decoding is memory-bandwidth-bound, so parallel instances just compete for
+# the same bus), PaddleOCR's CNN inference is compute-bound, so this is a
+# genuinely different case worth testing independently rather than assuming
+# the LLM result carries over. Each worker process gets its own PaddleOCR
+# engine instance (model load cost paid once per worker, not per page).
+OCR_N_WORKERS = int(os.getenv("OCR_N_WORKERS", "1"))
+
 # Chunking (word-count approximation, 1 token ~= 0.75 words)
 CHUNK_SIZE_TOKENS = 500
 CHUNK_OVERLAP_TOKENS = 100
