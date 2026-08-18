@@ -90,6 +90,10 @@ def format_indian_number(value: float | int, decimals: int = 0) -> str:
     return f"-{result}" if negative else result
 
 
+_TRAILING_NUMERIC_RUN = re.compile(r"(?:\s+\(?-?[\d][\d,]*\.?\d*\)?)+\s*$")
+_TRAILING_NOTE_REF = re.compile(r"\s+\d{1,3}[a-zA-Z]{0,2}\s*$")
+
+
 def clean_label(label: str) -> str:
     """Lowercase and strip a raw line-item label for matching.
 
@@ -103,6 +107,18 @@ def clean_label(label: str) -> str:
     text = re.sub(r"\[[^\]]*\]", "", text)
     text = text.rstrip(":").strip()
     text = re.sub(r"\s+", " ", text)
+    # Some tables' grid detection merges the note-ref and value columns into
+    # the same cell as the label (confirmed on a real filing: a row's cell 0
+    # literally reads "property, plant and equipment 2a 7.96 15,602") --
+    # without stripping this, the numeric noise dilutes fuzzy/embedding
+    # matching enough that even a canonical, unambiguous label like "Property,
+    # Plant and Equipment" falls below both thresholds and gets logged
+    # unmapped. Strip a trailing run of number-shaped tokens, then a lone
+    # short alphanumeric note-ref token (e.g. "2a") that a pure-numeric strip
+    # wouldn't catch.
+    text = _TRAILING_NUMERIC_RUN.sub("", text)
+    text = _TRAILING_NOTE_REF.sub("", text)
+    text = text.strip()
     return text
 
 
