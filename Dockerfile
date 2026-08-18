@@ -29,7 +29,16 @@ RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir -r requirements.txt \
     && pip install --no-cache-dir gdown
 
-COPY . .
+# Everything below downloads several GB (standards corpus + ~4.7GB LLM +
+# embedding model) and depends on nothing but pip packages already
+# installed above — deliberately placed BEFORE `COPY . .` so Docker's layer
+# cache reuses all of it on every ordinary code-only deploy. Previously this
+# came AFTER `COPY . .`, which meant editing even one Python line
+# invalidated the cache from that point on and forced a full multi-GB
+# re-download every single deploy — the real cause of this project's
+# consistently slow (20-60min) and sometimes-timing-out builds, confirmed
+# after several real deploys hit gcloud's DEADLINE_EXCEEDED. Only reorder
+# this back if one of these steps ever needs to read application source.
 
 # Standards corpus (ICAI/MCA-licensed, kept out of git — see .gitignore) is
 # fetched the same way run.sh does it locally: a prebuilt data/standards +
@@ -56,6 +65,11 @@ RUN python -c "\
 from sentence_transformers import SentenceTransformer; \
 SentenceTransformer('BAAI/bge-m3')"
 ENV LOCAL_LLM_MODEL_PATH=/app/models/qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf
+
+# Application source last — this is the layer that actually changes on a
+# typical deploy, and it's cheap (a few MB of Python), so it belongs after
+# everything multi-GB above, not before it.
+COPY . .
 
 # Cloud Run injects $PORT (default 8080) and expects the server bound to it on
 # 0.0.0.0 — app.py reads $PORT itself, this EXPOSE is documentation only.
