@@ -82,10 +82,31 @@ SERVICE_NAME="${SERVICE_NAME:-audit-risk-report-generator}"
 # this, Cloud Run can route those two requests to different instances, and
 # the analysis fails with "No such file" because the upload only exists on
 # the first instance's local /tmp.
+#
+# Built and deployed as two separate steps, not the simpler one-shot
+# `gcloud run deploy --source .`: that form silently caps its Cloud Build
+# job at 1800s (30 min) no matter what `gcloud config set builds/timeout`
+# is set to — confirmed via `gcloud builds describe` on 4 real failed
+# deploys, all status TIMEOUT, even after raising builds/timeout to 7200.
+# This Dockerfile's own docker-build step alone measured ~20-29 min before
+# even reaching the image push, so it was always right at that edge and
+# any small slowdown pushed it over with zero useful error message (just
+# DEADLINE_EXCEEDED). `gcloud builds submit --timeout=` is a real,
+# independently-documented flag that Cloud Build actually honors — split
+# the build out to use it, then deploy the already-pushed image (fast, no
+# build wait) separately.
+IMAGE="us-central1-docker.pkg.dev/${PROJECT_ID}/cloud-run-source-deploy/${SERVICE_NAME}:latest"
+
+gcloud builds submit \
+    --tag "$IMAGE" \
+    --timeout=3600s \
+    --project "$PROJECT_ID" \
+    .
+
 gcloud run deploy "$SERVICE_NAME" \
     --project "$PROJECT_ID" \
     --region "$REGION" \
-    --source . \
+    --image "$IMAGE" \
     --cpu 8 \
     --memory 32Gi \
     --gpu=0 \
