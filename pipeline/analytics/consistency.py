@@ -10,6 +10,64 @@ from pipeline.normalizer.line_item_mapper import _parse_table_rows
 _RESTRICTED_BALANCE_PATTERN = re.compile(r"restricted[^\n\d]{0,60}", re.IGNORECASE)
 _NUMBER_PATTERN = re.compile(r"[\d,]+\.?\d*")
 
+# CIN (Corporate Identification Number) is a unique 21-character identifier
+# every Indian company has: 1 letter (L/U) + 5-digit activity code + 2-letter
+# state code + 4-digit incorporation year + 3-letter ownership type (PLC,
+# PTC, GOI, etc.) + 6-digit registration number.
+_CIN_PATTERN = re.compile(r"\b[LUu]\d{5}[A-Za-z]{2}\d{4}[A-Za-z]{3}\d{6}\b")
+
+# A CIN cited inside a Form AOC-2 related-party-transactions table is a
+# routine disclosure about a DIFFERENT company (a parent, sister concern,
+# trustee) — not evidence this document bundles that company's own
+# financial statements. Confirmed on a real single-entity filing: 3
+# unrelated real companies' CINs all appeared inside one such table,
+# producing a false positive. "related party" alone isn't a reliable enough
+# marker: pdfplumber's text extraction interleaves this table's two columns
+# in a scrambled order (confirmed — "Name(s) of the related IDBI MF Trustee
+# Company Limited (CIN: | party and nature of U6599...)" splits "related"
+# and "party" apart with the company name/CIN injected between them), so
+# "related\s+party" as an adjacent phrase missed 2 of the 3. AOC-2's
+# section header phrase "arm's length basis" survives that scrambling
+# intact in all 3 real cases, since it's a fixed heading rather than part
+# of the two-column data itself — a bare occurrence-count threshold can't
+# substitute for this either, since the filing's own CIN appeared 43 times
+# but a genuine second bundled entity can legitimately appear just once
+# (e.g. only on its own signature page).
+_RELATED_PARTY_CONTEXT = re.compile(r"arm'?s\s+length|related\s+part(?:y|ies)", re.IGNORECASE)
+_RELATED_PARTY_WINDOW = 300
+
+
+def check_multi_entity_document(full_text: str) -> AuditFlag | None:
+    """This tool's whole analysis assumes one reporting entity. >1 distinct
+    CIN in a document (excluding ones cited in a related-party disclosure —
+    see _RELATED_PARTY_CONTEXT) is near-certain proof it isn't one —
+    confirmed on a real filing where a 247-page mutual-fund AMC annual
+    report turned out to bundle 19 separate SEBI-registered fund schemes,
+    each with its own financial statements. The mapper had no way to tell
+    which scheme a given figure belonged to, producing a low mapping rate
+    and at least one flag that silently mixed two different schemes'
+    figures under one label. Rather than repeat that silently, surface it
+    as the loudest possible warning so every other observation in the
+    report gets read with the right skepticism."""
+    cins = set()
+    for m in _CIN_PATTERN.finditer(full_text):
+        window_start = max(0, m.start() - _RELATED_PARTY_WINDOW)
+        if _RELATED_PARTY_CONTEXT.search(full_text[window_start:m.start()]):
+            continue
+        cins.add(m.group(0).upper())
+    cins = sorted(cins)
+    if len(cins) > 1:
+        return AuditFlag(
+            flag_id="MULTI_ENTITY_DOCUMENT",
+            area="Document Scope",
+            severity="High",
+            evidence={"distinct_cins": cins, "count": len(cins)},
+            note_ids=[],
+            standard_query="single reporting entity separate financial statements Ind AS 1",
+            triggered_by=f"Document contains {len(cins)} distinct company CINs — likely a multi-entity bundle",
+        )
+    return None
+
 
 def check_csr_balance_vs_bank(
     csr_details: CSRDetails | None, note_7f_restricted_balance: float | None
@@ -183,6 +241,10 @@ def run_consistency_checks(
         flags.append(f)
 
     f = check_cashflow_column_header(full_text)
+    if f:
+        flags.append(f)
+
+    f = check_multi_entity_document(full_text)
     if f:
         flags.append(f)
 

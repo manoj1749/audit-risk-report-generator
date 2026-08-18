@@ -389,6 +389,28 @@ def _cashflow_header_error(flag: AuditFlag) -> tuple[str, str]:
     return obs, rec
 
 
+@_register("MULTI_ENTITY_DOCUMENT")
+def _multi_entity_document(flag: AuditFlag) -> tuple[str, str]:
+    e = flag.evidence
+    cins = e.get("distinct_cins", [])
+    obs = (
+        f"This document contains {e.get('count', len(cins))} distinct company "
+        f"CINs (Corporate Identification Numbers): {', '.join(cins)}. This "
+        "tool's analysis assumes a single reporting entity — figures from "
+        "different companies or schemes bundled into one file may be "
+        "silently mixed together in the results above, so every other "
+        "observation in this report should be treated with reduced "
+        "confidence until the document is split and each entity is "
+        "analyzed separately."
+    )
+    rec = (
+        "Split this document by entity (using the CINs above to identify "
+        "boundaries) and re-run the analysis on each entity's financial "
+        "statements individually for a reliable result."
+    )
+    return obs, rec
+
+
 def build_templated_text(flag: AuditFlag) -> tuple[str, str] | None:
     """(observation, recommendation) for a flag_id with a known template, or
     None if none exists — caller should fall back to the LLM path."""
