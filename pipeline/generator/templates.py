@@ -407,6 +407,26 @@ def _audit_trail_lapse(flag: AuditFlag) -> tuple[str, str]:
     return obs, rec
 
 
+@_register("AUDITOR_EMPHASIS_PARAGRAPH")
+def _auditor_emphasis_paragraph(flag: AuditFlag) -> tuple[str, str]:
+    e = flag.evidence
+    kind = e.get("paragraph_type", "Emphasis of Matter")
+    excerpt = e.get("excerpt", "")
+    obs = (
+        f"The auditor's report contains a '{kind}' paragraph — a section "
+        "only included when the auditor is drawing specific attention to "
+        f"a matter of fundamental importance: “{excerpt}…” This is a "
+        "qualitative disclosure, not a number, so it would not otherwise "
+        "surface anywhere else in this report."
+    )
+    rec = (
+        "Read the full paragraph in the auditor's report and assess "
+        "whether the underlying matter changes how the rest of this "
+        "filing's figures should be interpreted."
+    )
+    return obs, rec
+
+
 @_register("MULTI_ENTITY_DOCUMENT")
 def _multi_entity_document(flag: AuditFlag) -> tuple[str, str]:
     e = flag.evidence

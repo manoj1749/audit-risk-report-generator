@@ -79,6 +79,39 @@ def check_audit_trail_lapse(full_text: str) -> AuditFlag | None:
     return None
 
 
+# "Emphasis of Matter" (SA 706) and "Material Uncertainty Related to Going
+# Concern" (SA 570) are standard, NAMED section headings in an Indian/ISA-
+# format auditor's report — unlike a bare "going concern" keyword (which
+# appears in routine going-concern-basis-of-preparation boilerplate on
+# every clean filing too), these headings only appear when the auditor is
+# actually including a dedicated paragraph for something significant.
+# Presence alone is the signal; no negation logic needed, unlike the
+# audit-trail check above.
+_MATERIAL_UNCERTAINTY_HEADING = re.compile(r"material\s+uncertainty\s+related\s+to\s+going\s+concern", re.IGNORECASE)
+_EMPHASIS_OF_MATTER_HEADING = re.compile(r"emphasis\s+of\s+matter", re.IGNORECASE)
+
+
+def check_emphasis_of_matter(full_text: str) -> AuditFlag | None:
+    """See module comment above _MATERIAL_UNCERTAINTY_HEADING."""
+    match = _MATERIAL_UNCERTAINTY_HEADING.search(full_text)
+    kind = "Material Uncertainty Related to Going Concern"
+    if not match:
+        match = _EMPHASIS_OF_MATTER_HEADING.search(full_text)
+        kind = "Emphasis of Matter"
+    if not match:
+        return None
+    excerpt = re.sub(r"\s+", " ", full_text[match.start(): match.start() + 400]).strip()
+    return AuditFlag(
+        flag_id="AUDITOR_EMPHASIS_PARAGRAPH",
+        area="Auditor's Report — Emphasis / Going Concern",
+        severity="High" if kind.startswith("Material") else "Medium",
+        evidence={"paragraph_type": kind, "excerpt": excerpt},
+        note_ids=[],
+        standard_query="emphasis of matter material uncertainty going concern SA 570 SA 706",
+        triggered_by=f"Auditor's report contains a '{kind}' paragraph",
+    )
+
+
 def check_multi_entity_document(full_text: str) -> AuditFlag | None:
     """This tool's whole analysis assumes one reporting entity. >1 distinct
     CIN in a document (excluding ones cited in a related-party disclosure —
@@ -291,6 +324,10 @@ def run_consistency_checks(
         flags.append(f)
 
     f = check_audit_trail_lapse(full_text)
+    if f:
+        flags.append(f)
+
+    f = check_emphasis_of_matter(full_text)
     if f:
         flags.append(f)
 
