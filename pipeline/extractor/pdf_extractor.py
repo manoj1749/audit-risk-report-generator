@@ -123,7 +123,24 @@ def _get_ocr_engine():
         os.environ.setdefault("PADDLE_PDX_ENABLE_MKLDNN_BYDEFAULT", "False")
         from paddleocr import PaddleOCR
 
-        _ocr_engine = PaddleOCR(use_textline_orientation=True, lang="en")
+        _ocr_engine = PaddleOCR(
+            use_textline_orientation=True,
+            # Doc-orientation-classify and unwarping correct phone-camera
+            # skew/warp — irrelevant for flatbed/scanner-produced filing
+            # PDFs, and each is a full extra model pass per page. Real
+            # Cloud Run measurement without these two knobs tuned: ~150s/page
+            # on an 8-vCPU instance (oneDNN disabled, see above), too slow
+            # for a 40+ page scan to finish inside Cloud Run's 3600s request
+            # ceiling.
+            use_doc_orientation_classify=False,
+            use_doc_unwarping=False,
+            # "small" instead of the default "medium" det/rec tier: PaddleX's
+            # own PP-OCRv6 benchmarks show small matching the older
+            # v5-mobile tier's latency with better accuracy than medium.
+            text_detection_model_name="PP-OCRv6_small_det",
+            text_recognition_model_name="PP-OCRv6_small_rec",
+            lang="en",
+        )
     return _ocr_engine
 
 
