@@ -37,6 +37,48 @@ _RELATED_PARTY_CONTEXT = re.compile(r"arm'?s\s+length|related\s+part(?:y|ies)", 
 _RELATED_PARTY_WINDOW = 300
 
 
+# Rule 11(g) of the Companies (Audit and Auditors) Rules, 2014 (a separate
+# requirement from CARO's 21 clauses, reported alongside them) requires
+# auditors to state whether the accounting software's audit trail (edit
+# log) was enabled, unmodified, and operated throughout the year. A clean
+# filing states this compliance in one sentence with no exception; a real
+# lapse layers an exception clause onto the same sentence — confirmed on a
+# real filing: "...operated throughout the year...except for the period
+# 1st April 2025 to 8th January 2026." A bare "audit trail" presence check
+# would fire on nearly every filing since most simply confirm compliance,
+# and a bare negation-word search is actively wrong here: the SAME
+# compliant sentence also routinely says "has not been tampered with" —
+# containing "not" while being good news, not a lapse. So this anchors
+# negation specifically to enabled/operational/operat(ed/ing), not to
+# "tampered", and separately treats "except" as its own strong signal.
+_AUDIT_TRAIL_MENTION = re.compile(r"audit\s+trail", re.IGNORECASE)
+_AUDIT_TRAIL_EXCEPTION = re.compile(
+    r"\bexcept\b|not\s+(?:been\s+)?(?:enabled|operational|operat\w*)\b|"
+    r"(?:did|does)\s+not\s+(?:have|maintain|use)\b|\bdisabled\b|\bdiscontinued\b",
+    re.IGNORECASE,
+)
+_AUDIT_TRAIL_WINDOW = 400
+
+
+def check_audit_trail_lapse(full_text: str) -> AuditFlag | None:
+    """See module comment above _AUDIT_TRAIL_MENTION for the design
+    rationale (why a bare keyword or negation search doesn't work here)."""
+    for m in _AUDIT_TRAIL_MENTION.finditer(full_text):
+        window = full_text[m.start(): m.start() + _AUDIT_TRAIL_WINDOW]
+        if _AUDIT_TRAIL_EXCEPTION.search(window):
+            snippet = re.sub(r"\s+", " ", window[:280]).strip()
+            return AuditFlag(
+                flag_id="AUDIT_TRAIL_LAPSE",
+                area="Audit Trail Compliance (Rule 11(g))",
+                severity="Medium",
+                evidence={"excerpt": snippet},
+                note_ids=[],
+                standard_query="audit trail edit log accounting software Rule 11(g) Companies Audit and Auditors Rules",
+                triggered_by="Auditor's report indicates the audit trail feature was not continuously operational",
+            )
+    return None
+
+
 def check_multi_entity_document(full_text: str) -> AuditFlag | None:
     """This tool's whole analysis assumes one reporting entity. >1 distinct
     CIN in a document (excluding ones cited in a related-party disclosure —
@@ -245,6 +287,10 @@ def run_consistency_checks(
         flags.append(f)
 
     f = check_multi_entity_document(full_text)
+    if f:
+        flags.append(f)
+
+    f = check_audit_trail_lapse(full_text)
     if f:
         flags.append(f)
 

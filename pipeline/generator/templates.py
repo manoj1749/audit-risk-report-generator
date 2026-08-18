@@ -389,6 +389,24 @@ def _cashflow_header_error(flag: AuditFlag) -> tuple[str, str]:
     return obs, rec
 
 
+@_register("AUDIT_TRAIL_LAPSE")
+def _audit_trail_lapse(flag: AuditFlag) -> tuple[str, str]:
+    excerpt = flag.evidence.get("excerpt", "")
+    obs = (
+        "The auditor's report indicates the accounting software's audit "
+        "trail (edit log) feature was not continuously operational "
+        "throughout the year, as required under Rule 11(g) of the "
+        f"Companies (Audit and Auditors) Rules, 2014: “{excerpt}…”"
+    )
+    rec = (
+        "Obtain the exact dates and cause of the audit trail gap, confirm "
+        "whether any transactions during that period lack a traceable "
+        "edit history, and verify the audit trail has since been restored "
+        "and preserved per the statutory record-retention requirement."
+    )
+    return obs, rec
+
+
 @_register("MULTI_ENTITY_DOCUMENT")
 def _multi_entity_document(flag: AuditFlag) -> tuple[str, str]:
     e = flag.evidence
