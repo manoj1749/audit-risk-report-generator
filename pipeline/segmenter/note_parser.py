@@ -21,6 +21,23 @@ INLINE_NOTE_HEADER_PATTERN = re.compile(
     re.MULTILINE,
 )
 
+# Some real filings (confirmed on a cross-section of real companies — see the
+# extraction/mapping robustness audit) number notes as bare decimals with no
+# "Note" word at all, e.g. "2.14 Cash and Cash Equivalents" or
+# "1.2. Use of Estimates". NOTE_HEADER_PATTERN never matches these, which was
+# producing zero detected notes (and therefore zero observations) on every
+# such filing regardless of extraction quality. Bounded to 1-2 digits on each
+# side of the dot (real note numbering here never runs higher) and requires
+# the title to start with a capital letter immediately after the number, so
+# this doesn't misfire on figures like "26,726.37" (comma-formatted, never
+# matches) or dates like "31.03.2025" (immediately followed by more digits,
+# not a letter).
+DECIMAL_NOTE_HEADER_PATTERN = re.compile(
+    r"^(\d{1,2}\.\d{1,2})\.?\s+([A-Z][^\n]*?)"
+    r"(?=\s+\d{1,2}\.\d{1,2}\.?\s+[A-Z]|$)",
+    re.MULTILINE,
+)
+
 TRANSITION_PATTERN = re.compile(
     r"Notes\s+to\s+(?:\S+\s+){0,5}?(?:Financial\s+Statements?|Accounts)",
     re.IGNORECASE,
@@ -87,9 +104,16 @@ def parse_notes(extracted: ExtractedDocument) -> dict[str, NoteSection]:
         logger.warning("Could not find 'Notes to Financial Statements/Accounts' transition; "
                         "scanning entire document for note headers")
 
+    # Always union all three header styles rather than treating them as
+    # exclusive alternatives: a real filing confirmed both a "Note N:" style
+    # generic preamble line AND its actual numbered notes in the bare-decimal
+    # style ("2.14 Title") in the same document — an exclusive fallback (only
+    # try decimal if "Note N:" found literally nothing) missed every real
+    # note on that filing because of one unrelated spurious match.
     matches = sorted(
         list(NOTE_HEADER_PATTERN.finditer(text, pos=search_start))
-        + list(INLINE_NOTE_HEADER_PATTERN.finditer(text, pos=search_start)),
+        + list(INLINE_NOTE_HEADER_PATTERN.finditer(text, pos=search_start))
+        + list(DECIMAL_NOTE_HEADER_PATTERN.finditer(text, pos=search_start)),
         key=lambda m: m.start(),
     )
     if not matches:
@@ -101,8 +125,11 @@ def parse_notes(extracted: ExtractedDocument) -> dict[str, NoteSection]:
 
     for i, match in enumerate(matches):
         number = match.group(1)
-        letter = (match.group(2) or "").lower()
-        title = (match.group(3) or "").strip()
+        # DECIMAL_NOTE_HEADER_PATTERN has only 2 groups (number, title) — no
+        # letter-suffix concept for bare-decimal headers like "2.14 Title".
+        has_letter_group = match.re.groups >= 3
+        letter = (match.group(2) or "").lower() if has_letter_group else ""
+        title = (match.group(3 if has_letter_group else 2) or "").strip()
         note_id = f"{number}{letter}"
         full_id = f"Note {number}" + (f"({letter})" if letter else "")
 
