@@ -152,13 +152,55 @@ def detect_pdf_type(pdf_path: str) -> str:
         return "typed" if text_found >= 3 else "scanned"
 
 
+# Confirmed real pdfplumber bug on a filing's Statement of Changes in Equity
+# table: cells with vertically-rotated column headers extract with every
+# line's characters in reverse order (line order itself stays correct), e.g.
+# "sulpruS\n&\nsevreseR" is "Reserves\n&\nSurplus" backwards. Prefixes rather
+# than whole words, since the same PDF also drops "ti"/"tt"-style ligatures
+# to a literal NUL byte, which can eat a word's tail (a reversed
+# "Revalua\x00on" only substring-matches "reval", not "revaluation" whole).
+_REVERSAL_INDICATOR_PREFIXES = frozenset(
+    w[:5] for w in (
+        "cash", "flow", "hedge", "hedges", "reserve", "reserves", "surplus",
+        "equity", "other", "income", "gain", "loss", "share", "shares",
+        "total", "amount", "balance", "period", "prior", "current",
+        "changes", "capital", "instrument", "financial", "statements",
+        "money", "received", "against", "warrants", "particulars",
+        "exchange", "foreign", "operations", "revaluation", "translation",
+        "comprehensive", "effective", "portion", "component", "compound",
+        "applicable", "pending", "allotment", "restated", "beginning",
+        "reporting", "errors",
+    )
+)
+
+
+def _word_score(text: str) -> int:
+    lowered = text.replace("\x00", "").lower()
+    return sum(1 for p in _REVERSAL_INDICATOR_PREFIXES if p in lowered)
+
+
+def _fix_reversed_cell_text(cell: str) -> str:
+    """Reverse each line of a cell if doing so scores as meaningfully more
+    word-like — see _REVERSAL_INDICATOR_PREFIXES for why."""
+    lines = cell.split("\n")
+    fixed_lines: list[str] = []
+    changed = False
+    for line in lines:
+        if _word_score(line[::-1]) > _word_score(line):
+            fixed_lines.append(line[::-1])
+            changed = True
+        else:
+            fixed_lines.append(line)
+    return "\n".join(fixed_lines) if changed else cell
+
+
 def _clean_table_rows(rows: list[list[str | None]]) -> list[list[str | None]]:
     """Remove blank rows and repeated header rows; strip whitespace from cells."""
     cleaned: list[list[str | None]] = []
     header_signature = None
     for i, row in enumerate(rows):
         stripped = [
-            (cell.strip().replace("\n", " ") if isinstance(cell, str) else cell)
+            (_fix_reversed_cell_text(cell.strip()).replace("\n", " ") if isinstance(cell, str) else cell)
             for cell in row
         ]
         if all(cell is None or str(cell).strip() == "" for cell in stripped):
