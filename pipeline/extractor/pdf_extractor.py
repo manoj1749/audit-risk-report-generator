@@ -267,15 +267,56 @@ def _merge_multipage_tables(pages: list[PageContent]) -> None:
             next_page.tables.pop(0)
 
 
+# Below this character count, a "typed" page is treated as effectively blank
+# and — if it carries an embedded image — re-read via OCR. Confirmed on a
+# real filing where the front ~38 pages were genuine typed text (director's
+# report, AOC-2 annexure) but the back ~63 pages were the audited financial
+# statements attached as scanned images (signed/stamped pages, a common
+# pattern for Indian statutory filings) — detect_pdf_type() only samples the
+# first 5 pages, so the whole document was classified "typed" and every one
+# of those 63 pages — the actual balance sheet, P&L, and notes — silently
+# returned nothing.
+_BLANK_PAGE_CHAR_THRESHOLD = 30
+
+
 def _extract_typed_pdf(pdf_path: str) -> list[PageContent]:
     pages: list[PageContent] = []
+    ocr_fallback_pages: list[int] = []
     with pdfplumber.open(pdf_path) as pdf:
+        total = len(pdf.pages)
         for i, page in enumerate(pdf.pages):
             raw_text = page.extract_text(x_tolerance=3, y_tolerance=3) or ""
             tables = _extract_tables_from_page(page, i + 1)
+            ocr = False
+            if len(raw_text.strip()) < _BLANK_PAGE_CHAR_THRESHOLD and page.images:
+                # Same silent-black-box risk as full-document OCR (see
+                # _extract_scanned_pdf): a run of these can take minutes with
+                # nothing to show for it, and long enough silence has
+                # triggered Gradio's client-side heartbeat-death page reload
+                # on a real document (confirmed on a 63-fallback-page filing).
+                # Logging each one, not just the final count, keeps this
+                # visible the same way the full-OCR path already is.
+                page_t0 = time.time()
+                image = page.to_image(resolution=200).original
+                ocr_text = _ocr_image_to_text(image)
+                if len(ocr_text.strip()) > len(raw_text.strip()):
+                    raw_text = ocr_text
+                    ocr = True
+                    ocr_fallback_pages.append(i + 1)
+                    logger.info(
+                        f"OCR fallback: page {i + 1}/{total} (blank in typed extraction, "
+                        f"had an embedded image) re-read in {time.time() - page_t0:.1f}s — "
+                        f"{len(ocr_fallback_pages)} such page(s) so far"
+                    )
             pages.append(
-                PageContent(page_num=i + 1, raw_text=raw_text, tables=tables, ocr=False)
+                PageContent(page_num=i + 1, raw_text=raw_text, tables=tables, ocr=ocr)
             )
+    if ocr_fallback_pages:
+        logger.info(
+            f"{len(ocr_fallback_pages)} page(s) in this typed PDF were near-blank with an "
+            "embedded image (scanned pages mixed into an otherwise-typed document) — "
+            f"re-read via OCR: pages {ocr_fallback_pages}"
+        )
     _merge_multipage_tables(pages)
     return pages
 
