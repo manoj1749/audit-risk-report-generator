@@ -82,6 +82,18 @@ def map_line_item(raw_label: str) -> tuple[str | None, float, str]:
     if not cleaned:
         return None, 0.0, "unknown"
 
+    # A bare "Total" (Schedule III's balance sheet commonly labels its two
+    # grand-total rows just "Total", relying on the ASSETS / EQUITY AND
+    # LIABILITIES section heading above for meaning, not repeating it on the
+    # total line itself) has no textual content to disambiguate which total
+    # it is. Left to fuzzy/embedding matching it was landing on "total_income"
+    # (a P&L key) purely because that's the closest single-word canonical
+    # variant, silently corrupting the real total_assets figure with a
+    # confident-looking but wrong match. Table-level structural inference in
+    # _map_rows handles this instead, so refuse to guess here.
+    if cleaned == "total":
+        return None, 0.0, "unknown"
+
     # Negation override: Schedule III's standard trade payables disclosure format is
     # "(a) dues to micro/small enterprises" vs "(b) dues to creditors OTHER THAN micro
     # enterprises and small enterprises" -- the (b) variant literally contains the words
@@ -214,6 +226,7 @@ def _map_rows(
     from pipeline.normalizer.schema import CANONICAL_STATEMENT_TYPE
 
     idx = idx_start
+    row_results: list[tuple[str, float | None, float | None, str | None, str | None, float, str]] = []
     for label, current, prior, note_ref in rows:
         canonical_key, confidence, method = map_line_item(label)
         if (
@@ -226,6 +239,29 @@ def _map_rows(
                 f"(belongs to {CANONICAL_STATEMENT_TYPE.get(canonical_key)}, not {allowed_statement_type})"
             )
             canonical_key, confidence, method = None, 0.0, "unknown"
+        row_results.append((label, current, prior, note_ref, canonical_key, confidence, method))
+
+    # Structural fallback for a bare "Total" balance-sheet grand-total row
+    # (map_line_item refuses to guess this from text alone -- see its
+    # docstring). If this table already produced several confident
+    # balance-sheet matches, it's a real balance sheet table, so the first
+    # still-unmapped bare-"total" row in reading order is Total Assets: in a
+    # standard Schedule III layout the ASSETS section (and its "Total" row)
+    # always comes before the EQUITY AND LIABILITIES section's own "Total"
+    # row. Confidence is deliberately low (0.6) so an actual textual "Total
+    # Assets" match elsewhere in the document -- higher method priority --
+    # still wins in _select_best.
+    bs_key_count = sum(
+        1 for *_r, key, _c, _m in row_results
+        if key is not None and CANONICAL_STATEMENT_TYPE.get(key) == "balance_sheet"
+    )
+    if bs_key_count >= 3:
+        for i, (label, current, prior, note_ref, canonical_key, confidence, method) in enumerate(row_results):
+            if canonical_key is None and clean_label(label) == "total":
+                row_results[i] = (label, current, prior, note_ref, "total_assets", 0.6, "structural")
+                break
+
+    for label, current, prior, note_ref, canonical_key, confidence, method in row_results:
         mapped[f"{idx}:{label}"] = MappedLineItem(
             raw_label=label,
             canonical_key=canonical_key,

@@ -3,7 +3,7 @@ from models.financial import MappedLineItem, MovementRecord
 from pipeline.normalizer.schema import DISPLAY_LABELS
 
 
-_METHOD_PRIORITY = {"exact": 3, "fuzzy": 2, "embedding": 1, "unknown": 0}
+_METHOD_PRIORITY = {"exact": 3, "structural": 2, "fuzzy": 2, "embedding": 1, "unknown": 0}
 
 
 def _select_best(items: list[MappedLineItem]) -> MappedLineItem:
