@@ -10,7 +10,14 @@
 set -euo pipefail
 
 PROJECT_ID="${PROJECT_ID:-project-ce055269-beff-44ce-bf8}"
-REGION="${REGION:-us-central1}"
+# Migrated from us-central1 on 2026-08-19: L4 GPU quota was unavailable in US
+# regions (Google Cloud Support case 74424203, stockout), and asia-southeast1
+# also cuts latency for our actual users (India) vs us-central1. The
+# us-central1 service/domain-mapping were left running as a fallback rather
+# than deleted -- audit.m4n0j.dev's DNS CNAME target is unchanged
+# (ghs.googlehosted.com.), only the Cloud Run domain-mapping resource moved,
+# so no DNS changes were needed for the cutover.
+REGION="${REGION:-asia-southeast1}"
 SERVICE_NAME="${SERVICE_NAME:-audit-risk-report-generator}"
 
 # GPU (NVIDIA L4) was attempted but is blocked: this project's Cloud Run GPU
@@ -95,12 +102,13 @@ SERVICE_NAME="${SERVICE_NAME:-audit-risk-report-generator}"
 # independently-documented flag that Cloud Build actually honors — split
 # the build out to use it, then deploy the already-pushed image (fast, no
 # build wait) separately.
-IMAGE="us-central1-docker.pkg.dev/${PROJECT_ID}/cloud-run-source-deploy/${SERVICE_NAME}:latest"
+IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/cloud-run-source-deploy/${SERVICE_NAME}:latest"
 
 gcloud builds submit \
     --tag "$IMAGE" \
     --timeout=3600s \
     --project "$PROJECT_ID" \
+    --region="$REGION" \
     .
 
 gcloud run deploy "$SERVICE_NAME" \
