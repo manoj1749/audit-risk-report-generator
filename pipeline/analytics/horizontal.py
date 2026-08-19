@@ -31,6 +31,18 @@ def get_canonical_values(mapped_items: dict[str, MappedLineItem]) -> dict[str, M
     return {key: _select_best(items) for key, items in grouped.items()}
 
 
+# No single face-statement line item's prior-year figure should sensibly
+# exceed the CURRENT year's total assets by more than this multiple -- e.g.
+# a "prior" of Rs 27,970 crore against Rs 17.8 crore of total assets today
+# is not a real 99% YoY decline, it's the prior-year cell having been
+# sourced from an unrelated row (confirmed on a real filing: a note's own
+# nested currency-breakdown sub-table with its own "Total"/lettered subtotal
+# rows bled into the face-statement scan). Real, economically plausible
+# swings don't land here; this exists to catch extraction cross-contamination,
+# not to second-guess genuine large movements.
+_IMPLAUSIBLE_PRIOR_MULTIPLE = 5.0
+
+
 def compute_movements(mapped_items: dict[str, MappedLineItem]) -> dict[str, MovementRecord]:
     """Compute YoY movements for all canonical keys where at least one of current/prior is non-None."""
     best_by_key = get_canonical_values(mapped_items)
@@ -44,6 +56,13 @@ def compute_movements(mapped_items: dict[str, MappedLineItem]) -> dict[str, Move
         prior = item.prior_value
         if current is None and prior is None:
             continue
+
+        implausible_prior = (
+            total_assets is not None and prior is not None
+            and abs(prior) > total_assets * _IMPLAUSIBLE_PRIOR_MULTIPLE
+        )
+        if implausible_prior:
+            prior = None
 
         absolute_change = (current - prior) if current is not None and prior is not None else None
         pct_change = None
@@ -63,5 +82,6 @@ def compute_movements(mapped_items: dict[str, MappedLineItem]) -> dict[str, Move
             pct_change=pct_change,
             materiality_pct=materiality_pct,
             note_ref=item.note_ref,
+            prior_suppressed=implausible_prior,
         )
     return movements

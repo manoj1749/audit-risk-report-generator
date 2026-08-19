@@ -170,6 +170,7 @@ class MovementRecord(BaseModel):
     pct_change: float | None          # None if prior is zero or None
     materiality_pct: float | None     # abs(current) / total_assets * 100
     note_ref: str | None = None       # as extracted from the source table, e.g. "7a"
+    prior_suppressed: bool = False    # True if a prior value was extracted but discarded as implausible
 
 
 class ComputedRatios(BaseModel):

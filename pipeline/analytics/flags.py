@@ -37,7 +37,7 @@ def check_first_occurrence_material(movements: dict[str, MovementRecord], total_
     if not total_assets:
         return flags
     for key, m in movements.items():
-        if m.prior is None and m.current and m.current > total_assets * 0.03:
+        if m.prior is None and not m.prior_suppressed and m.current and m.current > total_assets * 0.03:
             flags.append(AuditFlag(
                 flag_id=f"FIRST_OCCURRENCE_{key.upper()}",
                 area="New Significant Item",
