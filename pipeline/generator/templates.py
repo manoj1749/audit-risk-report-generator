@@ -449,6 +449,25 @@ def _multi_entity_document(flag: AuditFlag) -> tuple[str, str]:
     return obs, rec
 
 
+def _material_movement_generic(flag: AuditFlag) -> tuple[str, str]:
+    e = flag.evidence
+    label = e.get("display_label") or str(e.get("item", "")).replace("_", " ").title()
+    direction = "increased" if (e.get("pct_change") or 0) > 0 else "decreased"
+    size_basis = e.get("company_size_basis", "smaller")
+    obs = (
+        f"{label} {direction} by {_pct(abs(e['pct_change']))}% year-over-year, "
+        f"from ₹{_money(e['prior'])} lakh to ₹{_money(e['current'])} lakh — "
+        f"above the {_pct(e['threshold_used'])}% threshold applied for a "
+        f"{size_basis} company."
+    )
+    rec = (
+        f"Obtain a detailed explanation from management for the movement in "
+        f"{label.lower()} and corroborate it against supporting schedules "
+        "before relying on the reported figure."
+    )
+    return obs, rec
+
+
 def build_templated_text(flag: AuditFlag) -> tuple[str, str] | None:
     """(observation, recommendation) for a flag_id with a known template, or
     None if none exists — caller should fall back to the LLM path."""
@@ -456,4 +475,6 @@ def build_templated_text(flag: AuditFlag) -> tuple[str, str] | None:
         return _TEMPLATES[flag.flag_id](flag)
     if flag.flag_id.startswith("FIRST_OCCURRENCE_"):
         return _first_occurrence(flag)
+    if flag.flag_id.startswith("MATERIAL_MOVEMENT_"):
+        return _material_movement_generic(flag)
     return None

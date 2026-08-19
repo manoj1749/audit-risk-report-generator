@@ -323,6 +323,86 @@ def check_cwip_overdue(cwip_ageing: CWIPAgeing | None) -> AuditFlag | None:
     return None
 
 
+# ── GENERIC ────────────────────────────────────────────────────────
+
+# Canonical keys already covered by a dedicated rule above -- skip them here
+# so the same underlying movement isn't flagged twice under two different
+# rubrics (e.g. cash_equivalents is CASH_DECLINE's job, not this rule's).
+_MATERIAL_MOVEMENT_EXCLUDED_KEYS = {
+    "cash_equivalents", "roa_net", "other_financial_assets_current",
+    "total_non_current_liabilities", "trade_receivables", "revenue_from_operations",
+    "trade_payables_mse", "trade_payables_others", "share_of_jv_profit",
+    "tax_prior_years", "current_tax", "cfo", "pat",
+}
+
+# MCA "small company" definition (Companies Act 2013, as revised Dec 2025):
+# paid-up capital <= Rs 10 crore AND turnover <= Rs 100 crore. Figures in the
+# tool are normalized to Rs lakh throughout (see prompt_builder.py), so the
+# cutoffs below are in lakh: Rs 10 crore = 1,000 lakh, Rs 100 crore = 10,000 lakh.
+_SMALL_COMPANY_CAPITAL_CEILING_LAKH = 1000.0
+_SMALL_COMPANY_TURNOVER_CEILING_LAKH = 10000.0
+
+
+def check_material_movement_generic(
+    movements: dict[str, MovementRecord], total_assets: float | None
+) -> list[AuditFlag]:
+    """Any mapped line item (not already covered by a dedicated rule above)
+    that moves more than a size-adjusted threshold, in either direction.
+
+    Thresholds and severity bands come directly from Monali's voice notes
+    (18 Aug 2026): a base threshold of 15% for a "smaller" company vs 20%
+    for a "bigger" one to be flagged at all, then tiered by magnitude —
+    20-50% Low, 50-80% Medium, >80% High (confirmed directly, correcting an
+    ambiguous first pass at the transcript). Company size is judged by the
+    MCA "small company" test on paid-up capital (share_capital) and turnover
+    (revenue_from_operations); if either figure isn't available, default to
+    the smaller-company (15%, more sensitive) threshold rather than risk
+    under-flagging. A materiality floor (>0.5% of total assets, the same
+    floor CASH_DECLINE uses) keeps this from flagging trivial rupee-amount
+    swings that happen to have a big percentage change."""
+    flags: list[AuditFlag] = []
+    if not total_assets:
+        return flags
+
+    capital = movements.get("share_capital")
+    turnover = movements.get("revenue_from_operations")
+    is_small_company = True
+    if capital and capital.current is not None and turnover and turnover.current is not None:
+        is_small_company = (
+            capital.current <= _SMALL_COMPANY_CAPITAL_CEILING_LAKH
+            and turnover.current <= _SMALL_COMPANY_TURNOVER_CEILING_LAKH
+        )
+    threshold = 15.0 if is_small_company else 20.0
+
+    for key, m in movements.items():
+        if key in _MATERIAL_MOVEMENT_EXCLUDED_KEYS or key.startswith("total_"):
+            continue
+        if m.pct_change is None or m.materiality_pct is None or m.materiality_pct <= 0.5:
+            continue
+        magnitude = abs(m.pct_change)
+        if magnitude < threshold:
+            continue
+        severity = "High" if magnitude >= 80 else "Medium" if magnitude >= 50 else "Low"
+        flags.append(AuditFlag(
+            flag_id=f"MATERIAL_MOVEMENT_{key.upper()}",
+            area="Material Line Item Movement",
+            severity=severity,
+            evidence={
+                "item": key, "display_label": m.display_label,
+                "current": m.current, "prior": m.prior,
+                "pct_change": m.pct_change, "threshold_used": threshold,
+                "company_size_basis": "smaller" if is_small_company else "bigger",
+            },
+            note_ids=[],
+            standard_query="analytical procedures significant fluctuations unusual variance SA 520",
+            triggered_by=(
+                f"{key} moved {magnitude:.1f}% year-over-year, exceeding the "
+                f"{threshold:.0f}% threshold for a {'smaller' if is_small_company else 'bigger'} company"
+            ),
+        ))
+    return flags
+
+
 def check_unpaid_dividend(notes: dict[str, NoteSection]) -> AuditFlag | None:
     note_7f = notes.get("7f")
     text = note_7f.raw_text.lower() if note_7f else ""
@@ -387,5 +467,7 @@ def generate_all_flags(
         check_unpaid_dividend(notes),
     ]
     flags.extend(f for f in low_checks if f is not None)
+
+    flags.extend(check_material_movement_generic(movements, total_assets))
 
     return flags
