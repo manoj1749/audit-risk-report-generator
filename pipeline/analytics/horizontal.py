@@ -62,5 +62,6 @@ def compute_movements(mapped_items: dict[str, MappedLineItem]) -> dict[str, Move
             absolute_change=absolute_change,
             pct_change=pct_change,
             materiality_pct=materiality_pct,
+            note_ref=item.note_ref,
         )
     return movements

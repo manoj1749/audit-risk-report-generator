@@ -393,7 +393,7 @@ def check_material_movement_generic(
                 "pct_change": m.pct_change, "threshold_used": threshold,
                 "company_size_basis": "smaller" if is_small_company else "bigger",
             },
-            note_ids=[],
+            note_ids=[m.note_ref] if m.note_ref else [],
             standard_query="analytical procedures significant fluctuations unusual variance SA 520",
             triggered_by=(
                 f"{key} moved {magnitude:.1f}% year-over-year, exceeding the "

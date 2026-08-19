@@ -169,6 +169,7 @@ class MovementRecord(BaseModel):
     absolute_change: float | None
     pct_change: float | None          # None if prior is zero or None
     materiality_pct: float | None     # abs(current) / total_assets * 100
+    note_ref: str | None = None       # as extracted from the source table, e.g. "7a"
 
 
 class ComputedRatios(BaseModel):
