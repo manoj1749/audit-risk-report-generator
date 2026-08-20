@@ -27,13 +27,12 @@ INFO_TEXT = (
     "This is normally two documents: the base Excel sheet with the balance "
     "sheet, P&L, and cash flow — the main source of every figure in the "
     "report — plus the linked notes/schedules document, referenced by note "
-    "number, which the note-specific risk checks (MSME, CSR, contingent "
-    "liabilities, ageing) depend on. The notes/schedules document can be a "
-    "PDF, Word file, or a scanned/photographed image, and is always "
-    "required.\n\n"
-    "If the balance sheet and P&L aren't in Excel — e.g. everything, "
-    "including the face statements, is in one PDF — just upload that PDF "
-    "as the required document and skip the Excel upload."
+    "number, which the note-specific risk checks depend on. The "
+    "notes/schedules document can be a PDF, Word file, or a "
+    "scanned/photographed image, and is always required.\n\n"
+    "Annual Report: if the balance sheet and P&L aren't in Excel — e.g. "
+    "everything, including the face statements, is in one PDF — just "
+    "upload that PDF as the required document and skip the Excel upload."
 )
 
 RISK_ICON = {"High": "🔴", "Medium": "🟡", "Low": "🟢"}
