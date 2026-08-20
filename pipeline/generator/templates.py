@@ -453,12 +453,10 @@ def _material_movement_generic(flag: AuditFlag) -> tuple[str, str]:
     e = flag.evidence
     label = e.get("display_label") or str(e.get("item", "")).replace("_", " ").title()
     direction = "increased" if (e.get("pct_change") or 0) > 0 else "decreased"
-    size_basis = e.get("company_size_basis", "smaller")
     obs = (
         f"{label} {direction} by {_pct(abs(e['pct_change']))}% year-over-year, "
         f"from ₹{_money(e['prior'])} lakh to ₹{_money(e['current'])} lakh — "
-        f"above the {_pct(e['threshold_used'])}% threshold applied for a "
-        f"{size_basis} company."
+        f"above the {_pct(e['threshold_used'])}% threshold."
     )
     rec = (
         f"Obtain a detailed explanation from management for the movement in "
