@@ -63,13 +63,14 @@ def list_recent_reports(limit: int = 20) -> list[ReportListing]:
     (not an error) if persistence is disabled or listing fails, since this
     feeds a UI convenience list, not a critical path."""
     if not config.REPORTS_BUCKET:
-        print("DEBUG list_recent_reports: REPORTS_BUCKET unset", flush=True)
         return []
     try:
         bucket = _get_client().bucket(config.REPORTS_BUCKET)
-        raw_blobs = list(bucket.list_blobs(prefix="reports/"))
-        print(f"DEBUG list_recent_reports: bucket={config.REPORTS_BUCKET!r} found {len(raw_blobs)} blob(s): {[b.name for b in raw_blobs]}", flush=True)
-        blobs = sorted(raw_blobs, key=lambda b: b.time_created, reverse=True)[:limit]
+        blobs = sorted(
+            bucket.list_blobs(prefix="reports/"),
+            key=lambda b: b.time_created,
+            reverse=True,
+        )[:limit]
         listings = []
         for b in blobs:
             meta = b.metadata or {}
@@ -84,8 +85,6 @@ def list_recent_reports(limit: int = 20) -> list[ReportListing]:
             ))
         return listings
     except Exception as e:
-        import traceback
-        print(f"DEBUG list_recent_reports: EXCEPTION {e!r}\n{traceback.format_exc()}", flush=True)
         logger.warning(f"Could not list persisted reports: {e}")
         return []
 
