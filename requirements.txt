@@ -3,6 +3,7 @@ python-dotenv
 gradio>=5.0.0
 pydantic>=2.0.0
 loguru
+google-cloud-storage
 
 # PDF / image extraction
 pdfplumber>=0.10.0

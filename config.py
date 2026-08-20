@@ -15,6 +15,14 @@ UPLOADS_DIR = str(PROJECT_ROOT / os.getenv("UPLOADS_DIR", "data/uploads"))
 RAW_ZIPS_DIR = str(PROJECT_ROOT / "data/raw_zips")
 UNMAPPED_ITEMS_LOG = str(PROJECT_ROOT / "data/unmapped_items.log")
 
+# Completed reports are persisted here so a dropped browser connection (mobile
+# network hiccup, idle-instance recycle) doesn't lose an already-finished
+# report -- confirmed on a real incident where the backend completed
+# successfully but the user's connection dropped mid-run with no way to
+# retrieve the result afterward. Empty string disables persistence (local
+# dev without GCS credentials configured).
+REPORTS_BUCKET = os.getenv("REPORTS_BUCKET", "")
+
 CHROMA_COLLECTION_NAME = "audit_standards"
 EMBEDDING_MODEL_NAME = "BAAI/bge-m3"
 

@@ -276,6 +276,12 @@ def run_pipeline(primary_path, excel_path, progress: gr.Progress = gr.Progress()
     docx_path = tmp_dir / f"audit_risk_{report.period or 'report'}.docx"
     docx_path.write_bytes(docx_bytes)
 
+    # Persist before anything else that could still fail or take time -- a
+    # dropped connection or instance recycle after this point no longer
+    # means the finished report is unrecoverable (see report_storage.py).
+    from export.report_storage import upload_report
+    upload_report(docx_bytes, report.company_name, report.period)
+
     from export.charts import generate_movements_chart, generate_ratios_chart, generate_risk_distribution_chart
     risk_chart = _png_bytes_to_image(generate_risk_distribution_chart(report.summary))
     movements_chart = _png_bytes_to_image(generate_movements_chart(report.key_movements))
@@ -317,6 +323,26 @@ def reset_ui():
     return gr.update(visible=True), gr.update(visible=False), None, None, ""
 
 
+def _refresh_recent_reports():
+    from export.report_storage import list_recent_reports
+    listings = list_recent_reports()
+    return gr.update(choices=[(l.display_name, l.object_name) for l in listings], value=None)
+
+
+def _download_selected_report(object_name: str | None):
+    if not object_name:
+        return None
+    from export.report_storage import download_report
+    data = download_report(object_name)
+    if data is None:
+        gr.Warning("Could not load that report — it may have been removed.")
+        return None
+    tmp_dir = Path(tempfile.mkdtemp())
+    out_path = tmp_dir / object_name.rsplit("/", 1)[-1]
+    out_path.write_bytes(data)
+    return str(out_path)
+
+
 with gr.Blocks(title="audit-risk-report-generator") as demo:
     gr.Markdown(
         "# 🔍 audit-risk-report-generator\n"
@@ -340,6 +366,16 @@ with gr.Blocks(title="audit-risk-report-generator") as demo:
             with gr.Column(scale=1):
                 gr.Markdown(INFO_TEXT)
         status_log = gr.Textbox(label="Progress", lines=8, interactive=False)
+
+        with gr.Accordion("Recent Reports", open=False):
+            gr.Markdown(
+                "Already-completed reports, saved here even if your connection "
+                "dropped before you could download them live."
+            )
+            with gr.Row():
+                recent_reports_dd = gr.Dropdown(label="Select a previous report", choices=[])
+                refresh_reports_btn = gr.Button("↻ Refresh")
+            recent_report_file = gr.File(label="⬇ Download")
 
     with gr.Group(visible=False) as results_group:
         header_md = gr.Markdown()
@@ -381,6 +417,12 @@ with gr.Blocks(title="audit-risk-report-generator") as demo:
         fn=reset_ui,
         outputs=[upload_group, results_group, primary_file, excel_file, status_log],
     )
+
+    refresh_reports_btn.click(fn=_refresh_recent_reports, outputs=[recent_reports_dd])
+    recent_reports_dd.change(
+        fn=_download_selected_report, inputs=[recent_reports_dd], outputs=[recent_report_file]
+    )
+    demo.load(fn=_refresh_recent_reports, outputs=[recent_reports_dd])
 
 demo.queue()
 
