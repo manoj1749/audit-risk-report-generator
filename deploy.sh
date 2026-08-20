@@ -84,11 +84,22 @@ SERVICE_NAME="${SERVICE_NAME:-audit-risk-report-generator}"
 # timeout=3600 because a large scanned PDF can take 20+ min of OCR (see
 # pipeline/extractor/pdf_extractor.py's per-page cache — first run on a given
 # file is slow, repeat runs on the same file are ~instant).
-# session-affinity + max-instances=1: Gradio uploads a file via one HTTP
-# request then runs the analysis over a separate SSE/queue request — without
-# this, Cloud Run can route those two requests to different instances, and
-# the analysis fails with "No such file" because the upload only exists on
-# the first instance's local /tmp.
+# session-affinity + max-instances=3 (raised from 1 on 2026-08-20): Gradio
+# uploads a file via one HTTP request then runs the analysis over a separate
+# SSE/queue request -- session-affinity keeps both requests from the SAME
+# browser session pinned to the SAME instance, which is what actually
+# prevents the analysis failing with "No such file" (the upload only exists
+# on the instance that received it). max-instances was originally capped at
+# 1 out of caution that affinity alone might not hold, but that was never
+# actually tested -- it just meant two people using the tool at the same
+# time locked each other out entirely ("no available instance", indistinct
+# from a broken deploy). Live-tested on a real incident: with max-instances
+# raised to 2, a second, unrelated session's full upload-through-report run
+# completed correctly (right company name, right figures, no cross-session
+# file mix-up) while a 105-page OCR job kept running concurrently on the
+# first instance. Set to 3 for a bit more headroom; cost is per-use, not
+# always-on (min-instances stays 0), so this only costs anything during
+# actual concurrent usage, not continuously.
 #
 # Built and deployed as two separate steps, not the simpler one-shot
 # `gcloud run deploy --source .`: that form silently caps its Cloud Build
@@ -122,7 +133,7 @@ gcloud run deploy "$SERVICE_NAME" \
     --concurrency 10 \
     --timeout 3600 \
     --min-instances 0 \
-    --max-instances 1 \
+    --max-instances 3 \
     --session-affinity \
     --allow-unauthenticated
 
