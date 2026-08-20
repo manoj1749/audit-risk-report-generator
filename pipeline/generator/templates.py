@@ -455,8 +455,7 @@ def _material_movement_generic(flag: AuditFlag) -> tuple[str, str]:
     direction = "increased" if (e.get("pct_change") or 0) > 0 else "decreased"
     obs = (
         f"{label} {direction} by {_pct(abs(e['pct_change']))}% year-over-year, "
-        f"from ₹{_money(e['prior'])} lakh to ₹{_money(e['current'])} lakh — "
-        f"above the {_pct(e['threshold_used'])}% threshold."
+        f"from ₹{_money(e['prior'])} lakh to ₹{_money(e['current'])} lakh."
     )
     rec = (
         f"Obtain a detailed explanation from management for the movement in "
