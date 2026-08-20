@@ -122,6 +122,9 @@ gcloud builds submit \
     --region="$REGION" \
     .
 
+# REPORTS_BUCKET is intentionally the same single bucket for every region --
+# a unified report history regardless of which region happened to serve a
+# given run, not one fragmented list per region.
 gcloud run deploy "$SERVICE_NAME" \
     --project "$PROJECT_ID" \
     --region "$REGION" \
@@ -129,7 +132,7 @@ gcloud run deploy "$SERVICE_NAME" \
     --cpu 8 \
     --memory 32Gi \
     --gpu=0 \
-    --set-env-vars LOCAL_LLM_N_THREADS=8 \
+    --set-env-vars LOCAL_LLM_N_THREADS=8,REPORTS_BUCKET=audit-risk-reports-368675610715 \
     --concurrency 10 \
     --timeout 3600 \
     --min-instances 0 \
