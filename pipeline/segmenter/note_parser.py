@@ -31,10 +31,16 @@ INLINE_NOTE_HEADER_PATTERN = re.compile(
 # the title to start with a capital letter immediately after the number, so
 # this doesn't misfire on figures like "26,726.37" (comma-formatted, never
 # matches) or dates like "31.03.2025" (immediately followed by more digits,
-# not a letter).
+# not a letter). The integer part must not start with 0 ([1-9], not \d) --
+# confirmed on a real 570-page filing that a chart's "0.00" y-axis tick mark,
+# immediately followed by capitalized fiscal-year labels ("0.00\nFY15 FY16
+# ..."), matched this pattern as note "0.00" and (with no subsequent match
+# found to bound it) swallowed pages 30-570 as its own content, silently
+# excluding the real Balance Sheet from face-statement mapping entirely. Real
+# note numbering always starts at 1, never 0.
 DECIMAL_NOTE_HEADER_PATTERN = re.compile(
-    r"^(\d{1,2}\.\d{1,2})\.?\s+([A-Z][^\n]*?)"
-    r"(?=\s+\d{1,2}\.\d{1,2}\.?\s+[A-Z]|$)",
+    r"^([1-9]\d?\.\d{1,2})\.?\s+([A-Z][^\n]*?)"
+    r"(?=\s+[1-9]\d?\.\d{1,2}\.?\s+[A-Z]|$)",
     re.MULTILINE,
 )
 
