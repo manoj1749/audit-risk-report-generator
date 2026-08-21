@@ -115,6 +115,15 @@ class CWIPAgeing(BaseModel):
     year: str | None = None
 
 
+class PPEDepreciationRollforward(BaseModel):
+    """Current-year movement in accumulated depreciation, from the PPE note's
+    'Total' column -- used to check the roll-forward arithmetic reconciles."""
+    opening_accumulated_depreciation: float | None = None
+    depreciation_charge: float | None = None
+    disposals: float | None = None
+    closing_accumulated_depreciation: float | None = None
+
+
 class ContingentLiabilities(BaseModel):
     income_tax: float | None = None
     service_tax: float | None = None
@@ -204,3 +213,4 @@ class StructuredTables(BaseModel):
     msmed_disclosure: MSMEDDisclosure | None = None
     actuarial_assumptions: ActuarialAssumptions | None = None
     company_ratios: CompanyRatios | None = None
+    ppe_depreciation: PPEDepreciationRollforward | None = None

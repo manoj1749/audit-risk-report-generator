@@ -7,6 +7,7 @@ from models.financial import (
     MovementRecord,
     MSMEDDisclosure,
     NoteSection,
+    PPEDepreciationRollforward,
     StructuredTables,
 )
 from models.flags import AuditFlag
@@ -95,6 +96,34 @@ def check_cashflow_reconciliation(movements: dict[str, MovementRecord]) -> Audit
         note_ids=[],
         standard_query="cash flow statement reconciliation opening closing balance Ind AS 7",
         triggered_by="Opening cash plus CFO, CFI and CFF does not reconcile to the disclosed closing cash balance",
+    )
+
+
+def check_ppe_depreciation_reconciliation(ppe: PPEDepreciationRollforward | None) -> AuditFlag | None:
+    if ppe is None:
+        return None
+    fields = [ppe.opening_accumulated_depreciation, ppe.depreciation_charge, ppe.disposals, ppe.closing_accumulated_depreciation]
+    if any(f is None for f in fields):
+        return None
+    expected_closing = ppe.opening_accumulated_depreciation + ppe.depreciation_charge + ppe.disposals
+    diff = abs(expected_closing - ppe.closing_accumulated_depreciation)
+    if diff <= 1:
+        return None
+    return AuditFlag(
+        flag_id="PPE_DEPRECIATION_RECONCILIATION_ERROR",
+        area="Data Integrity — Property, Plant & Equipment",
+        severity="Medium",
+        evidence={
+            "opening_accumulated_depreciation": ppe.opening_accumulated_depreciation,
+            "depreciation_charge": ppe.depreciation_charge,
+            "disposals": ppe.disposals,
+            "computed_closing": expected_closing,
+            "disclosed_closing": ppe.closing_accumulated_depreciation,
+            "difference": diff,
+        },
+        note_ids=[],
+        standard_query="property plant equipment depreciation roll forward reconciliation Ind AS 16 Schedule II",
+        triggered_by="Opening accumulated depreciation plus the current-year charge, net of disposals, does not reconcile to the disclosed closing accumulated depreciation",
     )
 
 
@@ -474,6 +503,7 @@ def generate_all_flags(
         check_csr_unspent(structured_tables.csr_details),
         check_msme_interest_accrued(structured_tables.msmed_disclosure),
         check_trade_payables_sharp_reduction(movements),
+        check_ppe_depreciation_reconciliation(structured_tables.ppe_depreciation),
     ]
     flags.extend(f for f in medium_checks if f is not None)
 

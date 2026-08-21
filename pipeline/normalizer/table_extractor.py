@@ -18,6 +18,7 @@ from models.financial import (
     DisclosedRatio,
     MSMEDDisclosure,
     NoteSection,
+    PPEDepreciationRollforward,
     StructuredTables,
     TableData,
     TradePayablesAgeing,
@@ -198,6 +199,121 @@ def parse_cwip_ageing(table: TableData) -> CWIPAgeing | None:
         return CWIPAgeing(projects=projects, total=total, year="current")
     except Exception as e:
         logger.warning(f"parse_cwip_ageing failed: {e}")
+        return None
+
+
+_PPE_SECTION_HEADER_ALIASES = {
+    "dep": ["depreciation and impairment", "accumulated depreciation"],
+    "gross": ["gross block"],
+    "nbv": ["net book value", "carrying amount"],
+}
+
+
+def _ppe_section_header(label: str) -> str | None:
+    low = label.lower().strip().rstrip(":")
+    for section, aliases in _PPE_SECTION_HEADER_ALIASES.items():
+        if any(fuzz.ratio(low, alias) > 85 for alias in aliases):
+            return section
+    return None
+
+
+# By the time a table reaches this parser, pdfplumber's per-line cell content
+# has already been flattened to a single space-joined string (see
+# pdf_extractor._fix_reversed_cell_text usage), so the original row
+# boundaries within a merged label/value cell can't be recovered by
+# splitting on newlines. Reconstruct them instead by matching the known,
+# small vocabulary of row labels this Schedule III note uses -- the phrases
+# themselves double as the split points.
+_PPE_LABEL_TOKEN_PATTERN = re.compile(
+    r"gross block|"
+    r"deemed cost as at [a-z]+\s+\d{1,2},?\s*\d{4}|"
+    r"additions?|"
+    r"disposals?(?:\s*/\s*adjustments?)?|"
+    r"depreciation and impairment:?|"
+    r"accumulated depreciation|"
+    r"depreciation charge for the year|"
+    r"depreciation for the year|"
+    r"(?:as\s+)?at\s+[a-z]+\s+\d{1,2},?\s*\d{4}|"
+    r"net book value:?|"
+    r"carrying amount",
+    re.IGNORECASE,
+)
+_PPE_VALUE_TOKEN_PATTERN = re.compile(r"\(?-?[\d,]*\.?\d+\)?|-(?!\d)")
+
+
+def parse_ppe_depreciation_rollforward(table: TableData) -> PPEDepreciationRollforward | None:
+    """Property, plant & equipment note: reconstruct the row sequence from
+    the flattened label/value cell text using known row-label phrases as
+    split points, then walk labels and values in lockstep, treating
+    section-header phrases (which have no value of their own) as state."""
+    if _is_empty_table(table):
+        return None
+    try:
+        total_col = _find_total_col(table.headers)
+        if total_col is None and len(table.headers) > 1:
+            total_col = len(table.headers) - 1
+        if total_col is None:
+            return None
+
+        labels: list[str] = []
+        values: list[str] = []
+        for row in table.rows:
+            if not row or total_col >= len(row):
+                continue
+            label_cell = str(row[0] or "")
+            value_cell = str(row[total_col] or "")
+            labels.extend(m.group(0) for m in _PPE_LABEL_TOKEN_PATTERN.finditer(label_cell))
+            values.extend(m.group(0) for m in _PPE_VALUE_TOKEN_PATTERN.finditer(value_cell))
+
+        section = None
+        dep_rows: list[tuple[str, str]] = []
+        vi = 0
+        for label in labels:
+            label = label.strip()
+            if not label:
+                continue
+            hdr = _ppe_section_header(label)
+            if hdr:
+                section = hdr
+                continue
+            if vi >= len(values):
+                break
+            if section == "dep":
+                dep_rows.append((label, values[vi]))
+            vi += 1
+
+        dated_idxs = [i for i, (l, _) in enumerate(dep_rows) if l.lower().startswith(("at ", "as at"))]
+        if len(dated_idxs) < 2:
+            return None
+        open_idx, close_idx = dated_idxs[-2], dated_idxs[-1]
+        opening = parse_indian_number(dep_rows[open_idx][1])
+        closing = parse_indian_number(dep_rows[close_idx][1])
+
+        charge = 0.0
+        disposals = 0.0
+        found_charge = False
+        for label, value in dep_rows[open_idx + 1:close_idx]:
+            val = parse_indian_number(value)
+            if val is None:
+                continue
+            low = label.lower()
+            if "charge" in low or "depreciation for the year" in low:
+                charge += val
+                found_charge = True
+            elif "disposal" in low or "adjustment" in low:
+                disposals += val
+
+        if opening is None or closing is None or not found_charge:
+            return None
+
+        return PPEDepreciationRollforward(
+            opening_accumulated_depreciation=opening,
+            depreciation_charge=charge,
+            disposals=disposals,
+            closing_accumulated_depreciation=closing,
+        )
+    except Exception as e:
+        logger.warning(f"parse_ppe_depreciation_rollforward failed: {e}")
         return None
 
 
@@ -462,6 +578,7 @@ _NOTE_KEYWORDS = {
     "trade_receivables_ageing": (["receivable", "debtors"], parse_trade_receivables_ageing),
     "trade_payables_ageing": (["payable", "creditors"], parse_trade_payables_ageing),
     "cwip_ageing": (["capital work-in-progress", "capital work in progress", "cwip"], parse_cwip_ageing),
+    "ppe_depreciation": (["property, plant and equipment", "property plant and equipment"], parse_ppe_depreciation_rollforward),
     "contingent_liabilities": (["contingent liabilit"], parse_contingent_liabilities),
     "csr_details": (["corporate social responsibility", "csr"], parse_csr_details),
     "msmed_disclosure": (["micro", "small enterprise", "msme", "msmed"], parse_msmed_disclosure),

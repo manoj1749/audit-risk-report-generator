@@ -104,6 +104,26 @@ def _cashflow_reconciliation_error(flag: AuditFlag) -> tuple[str, str]:
     return obs, rec
 
 
+@_register("PPE_DEPRECIATION_RECONCILIATION_ERROR")
+def _ppe_depreciation_reconciliation_error(flag: AuditFlag) -> tuple[str, str]:
+    e = flag.evidence
+    obs = (
+        f"In the Property, Plant & Equipment note, opening accumulated "
+        f"depreciation of ₹{_money(e['opening_accumulated_depreciation'])} lakh plus "
+        f"the current year's depreciation charge of ₹{_money(e['depreciation_charge'])} lakh, "
+        f"net of disposals of ₹{_money(e['disposals'])} lakh, computes to "
+        f"₹{_money(e['computed_closing'])} lakh, which does not match the disclosed "
+        f"closing accumulated depreciation of ₹{_money(e['disclosed_closing'])} lakh — a "
+        f"difference of ₹{_money(e['difference'])} lakh."
+    )
+    rec = (
+        "Obtain the fixed asset register and trace the depreciation roll-forward "
+        "for each asset class to identify the source of the reconciliation "
+        "difference before relying on the reported carrying values."
+    )
+    return obs, rec
+
+
 @_register("ROU_MATERIAL_INCREASE")
 def _rou_increase(flag: AuditFlag) -> tuple[str, str]:
     e = flag.evidence
