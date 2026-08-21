@@ -84,6 +84,26 @@ def _cfo_pat_divergence(flag: AuditFlag) -> tuple[str, str]:
     return obs, rec
 
 
+@_register("CASHFLOW_RECONCILIATION_ERROR")
+def _cashflow_reconciliation_error(flag: AuditFlag) -> tuple[str, str]:
+    e = flag.evidence
+    obs = (
+        f"Opening cash of ₹{_money(e['opening_cash'])} lakh plus net cash flow "
+        f"from operating (₹{_money(e['cfo'])} lakh), investing (₹{_money(e['cfi'])} lakh) "
+        f"and financing (₹{_money(e['cff'])} lakh) activities computes to a closing cash "
+        f"balance of ₹{_money(e['computed_closing'])} lakh, which does not match the "
+        f"disclosed closing cash balance of ₹{_money(e['disclosed_closing'])} lakh — a "
+        f"difference of ₹{_money(e['difference'])} lakh."
+    )
+    rec = (
+        "Obtain the complete cash flow statement workings from management and "
+        "trace each component (operating, investing, financing) to the "
+        "underlying schedules to identify the source of the reconciliation "
+        "difference before relying on the reported figures."
+    )
+    return obs, rec
+
+
 @_register("ROU_MATERIAL_INCREASE")
 def _rou_increase(flag: AuditFlag) -> tuple[str, str]:
     e = flag.evidence

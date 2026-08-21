@@ -67,6 +67,37 @@ def check_cfo_pat_divergence(cfo: float | None, pat: float | None) -> AuditFlag 
     return None
 
 
+def check_cashflow_reconciliation(movements: dict[str, MovementRecord]) -> AuditFlag | None:
+    opening = movements.get("opening_cash")
+    cfo = movements.get("cfo")
+    cfi = movements.get("cfi")
+    cff = movements.get("cff")
+    closing = movements.get("closing_cash")
+    if not all(m is not None and m.current is not None for m in [opening, cfo, cfi, cff, closing]):
+        return None
+    expected_closing = opening.current + cfo.current + cfi.current + cff.current
+    diff = abs(expected_closing - closing.current)
+    if diff <= 1:
+        return None
+    return AuditFlag(
+        flag_id="CASHFLOW_RECONCILIATION_ERROR",
+        area="Data Integrity — Cash Flow Statement",
+        severity="High",
+        evidence={
+            "opening_cash": opening.current,
+            "cfo": cfo.current,
+            "cfi": cfi.current,
+            "cff": cff.current,
+            "computed_closing": expected_closing,
+            "disclosed_closing": closing.current,
+            "difference": diff,
+        },
+        note_ids=[],
+        standard_query="cash flow statement reconciliation opening closing balance Ind AS 7",
+        triggered_by="Opening cash plus CFO, CFI and CFF does not reconcile to the disclosed closing cash balance",
+    )
+
+
 def check_rou_material_increase(movements: dict[str, MovementRecord], total_assets: float | None) -> AuditFlag | None:
     m = movements.get("roa_net")
     if m and m.pct_change is not None and m.pct_change > 100 and m.materiality_pct is not None and m.materiality_pct > 2:
@@ -429,6 +460,7 @@ def generate_all_flags(
         check_rou_material_increase(movements, total_assets),
         check_contingent_liability_jump(structured_tables.contingent_liabilities, total_equity),
         check_other_financial_assets_surge(movements, total_assets),
+        check_cashflow_reconciliation(movements),
     ]
     flags.extend(f for f in high_checks if f is not None)
     flags.extend(check_first_occurrence_material(movements, total_assets))
