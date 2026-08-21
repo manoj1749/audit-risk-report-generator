@@ -343,6 +343,19 @@ def _download_selected_report(object_name: str | None):
     return str(out_path)
 
 
+# Requested directly: default to light mode regardless of the visitor's
+# system/browser dark-mode preference (still changeable per-user via
+# Settings, which is Gradio's own built-in theme toggle -- this only
+# overrides the *initial* state). Gradio applies a "dark" class to the root
+# element itself based on prefers-color-scheme before any Python-side theme
+# argument has a chance to run, so the reliable fix is a `js` hook that
+# strips it immediately after mount, not a `theme=` kwarg.
+_FORCE_LIGHT_JS = """
+() => {
+    document.querySelectorAll(".dark").forEach((el) => el.classList.remove("dark"));
+}
+"""
+
 with gr.Blocks(title="audit-risk-report-generator") as demo:
     gr.Markdown(
         "# 🔍 audit-risk-report-generator\n"
@@ -432,6 +445,7 @@ if __name__ == "__main__":
     launch_kwargs = dict(
         server_name=os.environ.get("GRADIO_SERVER_NAME", "127.0.0.1"),
         server_port=int(os.environ.get("PORT", 7860)),
+        js=_FORCE_LIGHT_JS,
     )
 
     # Confirmed via a real production crash (twice in 24h): Gradio's own
