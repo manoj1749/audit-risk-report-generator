@@ -112,6 +112,51 @@ def check_emphasis_of_matter(full_text: str) -> AuditFlag | None:
     )
 
 
+# CAG (Comptroller and Auditor General) conducts a supplementary audit of
+# every govt-company/CPSE filing under Section 143(6), and its comments are
+# printed as a standalone section headed like the patterns below. Nearly
+# every CPSE auditor's report routinely cites CARO 2020 / Section 143(5)
+# CAG-directions reporting as boilerplate (it's a mandatory disclosure, not
+# a risk signal by itself) -- the real signal is when CAG's OWN
+# supplementary review calls out that this reporting was deficient.
+# Confirmed against a real filing (ONGC FY24-25): CAG's comments state the
+# "report given by the Statutory Auditors... is incorrect... and is in
+# non-compliance of reporting requirements of CARO 2020" after finding an
+# undisclosed title-deed issue -- this is CAG faulting the auditor's own
+# report, not the company's numbers, which none of the existing checks
+# capture.
+_CAG_COMMENTS_SECTION = re.compile(
+    r"comments?\s+of\s+the\s+comptroller\s+and\s+auditor\s+general.{0,80}"
+    r"(?:section\s*143\s*\(?\s*6\s*\)?|supplementary\s+audit)",
+    re.IGNORECASE | re.DOTALL,
+)
+_CAG_REPORTING_DEFICIENCY = re.compile(
+    r"\bincorrect\b|non[- ]compliance|\bnot\s+(?:recorded|disclosed|reported)\b|"
+    r"was\s+not\s+(?:recorded|disclosed|reported|included)",
+    re.IGNORECASE,
+)
+_CAG_DEFICIENCY_WINDOW = 10000
+
+
+def check_cag_auditor_reporting_deficiency(full_text: str) -> AuditFlag | None:
+    """See module comment above _CAG_COMMENTS_SECTION."""
+    for m in _CAG_COMMENTS_SECTION.finditer(full_text):
+        window = full_text[m.end(): m.end() + _CAG_DEFICIENCY_WINDOW]
+        deficiency = _CAG_REPORTING_DEFICIENCY.search(window)
+        if deficiency:
+            snippet = re.sub(r"\s+", " ", window[max(0, deficiency.start() - 200): deficiency.start() + 200]).strip()
+            return AuditFlag(
+                flag_id="CAG_AUDITOR_REPORTING_DEFICIENCY",
+                area="Statutory Auditor's Report — CAG Supplementary Review",
+                severity="High",
+                evidence={"excerpt": snippet},
+                note_ids=[],
+                standard_query="CAG supplementary audit section 143(6) CARO 2020 auditor reporting deficiency",
+                triggered_by="CAG's supplementary audit comments indicate the statutory auditor's own report (CARO 2020 / Section 143(5) directions) was deficient or non-compliant",
+            )
+    return None
+
+
 def check_multi_entity_document(full_text: str) -> AuditFlag | None:
     """This tool's whole analysis assumes one reporting entity. >1 distinct
     CIN in a document (excluding ones cited in a related-party disclosure —
@@ -324,6 +369,10 @@ def run_consistency_checks(
         flags.append(f)
 
     f = check_audit_trail_lapse(full_text)
+    if f:
+        flags.append(f)
+
+    f = check_cag_auditor_reporting_deficiency(full_text)
     if f:
         flags.append(f)
 

@@ -413,6 +413,22 @@ def _tax_reconciliation_error(flag: AuditFlag) -> tuple[str, str]:
     return obs, rec
 
 
+@_register("CAG_AUDITOR_REPORTING_DEFICIENCY")
+def _cag_auditor_reporting_deficiency(flag: AuditFlag) -> tuple[str, str]:
+    excerpt = flag.evidence.get("excerpt", "")
+    obs = (
+        "The Comptroller and Auditor General of India's supplementary audit "
+        "comments indicate a deficiency in the statutory auditor's own "
+        f"reporting (CARO 2020 / Section 143(5) directions): “{excerpt}”"
+    )
+    rec = (
+        "Review CAG's supplementary audit comments in full and confirm "
+        "whether the statutory auditor has since corrected or supplemented "
+        "their report to address the specific reporting gap identified."
+    )
+    return obs, rec
+
+
 @_register("CASHFLOW_HEADER_ERROR")
 def _cashflow_header_error(flag: AuditFlag) -> tuple[str, str]:
     dates = flag.evidence.get("dates_found", [])
