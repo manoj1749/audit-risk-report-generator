@@ -520,6 +520,26 @@ def _auditor_qualified_opinion(flag: AuditFlag) -> tuple[str, str]:
     return obs, rec
 
 
+@_register("UNCONFIRMED_BALANCES")
+def _unconfirmed_balances(flag: AuditFlag) -> tuple[str, str]:
+    e = flag.evidence
+    excerpt = e.get("excerpt", "")
+    quantum = e.get("quantum")
+    quantum_clause = f" of {quantum}" if quantum else ""
+    obs = (
+        f"The notes disclose that certain balances{quantum_clause} are "
+        f"subject to confirmation/reconciliation and have not yet been "
+        f"independently confirmed: “{excerpt}”"
+    )
+    rec = (
+        "Assess the materiality of the unconfirmed balances and, where "
+        "significant, request external confirmations directly or perform "
+        "alternative procedures (e.g. subsequent receipts/payments testing) "
+        "per SA 505."
+    )
+    return obs, rec
+
+
 @_register("MULTI_ENTITY_DOCUMENT")
 def _multi_entity_document(flag: AuditFlag) -> tuple[str, str]:
     e = flag.evidence

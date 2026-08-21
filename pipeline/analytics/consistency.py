@@ -103,6 +103,59 @@ _QUALIFIED_OPINION_HEADING = re.compile(
 )
 
 
+# "Subject to confirmation/reconciliation" for trade receivables/payables/
+# loans is routine boilerplate present in most filings (confirmed in 5 real,
+# unrelated companies -- ONGC, SAIL, New India Assurance, CESCOM, KSDL) --
+# so bare presence alone is low-signal. The genuine differentiator is
+# whether a specific rupee quantum is stated (KSDL: "to the extent of
+# Rs.285.47 Crore are subject to confirmations") or whether the auditor's
+# own report elevates it into a qualification basis (CESCOM: "has not
+# obtained external confirmations for a significant portion of these
+# balances") -- both raise severity above the routine, unquantified case.
+_UNCONFIRMED_BALANCE_MENTION = re.compile(
+    r"subject\s+to\s+confirmations?(?:\s*/?\s*and)?(?:\s*/?\s*reconciliations?)?|"
+    r"yet\s+to\s+be\s+confirmed",
+    re.IGNORECASE,
+)
+_UNCONFIRMED_BALANCE_QUANTUM = re.compile(
+    r"(?:rs\.?|inr|₹)\s*([\d,]+(?:\.\d+)?)\s*(crore|lakh)s?", re.IGNORECASE
+)
+_UNCONFIRMED_BALANCE_AUDITOR_ELEVATED = re.compile(
+    r"has\s+not\s+obtained\s+external\s+confirmations?|significant\s+portion\s+of\s+these\s+balances",
+    re.IGNORECASE,
+)
+
+
+def check_unconfirmed_balances(full_text: str) -> AuditFlag | None:
+    """See module comment above _UNCONFIRMED_BALANCE_MENTION."""
+    match = _UNCONFIRMED_BALANCE_MENTION.search(full_text)
+    if not match:
+        return None
+    window = full_text[max(0, match.start() - 250): match.end() + 300]
+    quantum_match = _UNCONFIRMED_BALANCE_QUANTUM.search(window)
+    auditor_elevated = _UNCONFIRMED_BALANCE_AUDITOR_ELEVATED.search(window)
+    excerpt = re.sub(r"\s+", " ", window).strip()
+    if auditor_elevated:
+        severity = "High"
+    elif quantum_match:
+        severity = "Medium"
+    else:
+        severity = "Low"
+    return AuditFlag(
+        flag_id="UNCONFIRMED_BALANCES",
+        area="Data Integrity — Balance Confirmations",
+        severity=severity,
+        evidence={
+            "excerpt": excerpt,
+            "quantum": quantum_match.group(0) if quantum_match else None,
+            "auditor_elevated": bool(auditor_elevated),
+        },
+        note_ids=[],
+        standard_query="balance confirmation trade receivables payables loans reconciliation SA 505",
+        triggered_by="Trade receivables, payables, or loan balances are disclosed as subject to confirmation/reconciliation",
+    )
+
+
 def check_qualified_opinion(full_text: str) -> AuditFlag | None:
     """See module comment above _QUALIFIED_OPINION_HEADING."""
     match = _QUALIFIED_OPINION_HEADING.search(full_text)
@@ -406,6 +459,10 @@ def run_consistency_checks(
         flags.append(f)
 
     f = check_qualified_opinion(full_text)
+    if f:
+        flags.append(f)
+
+    f = check_unconfirmed_balances(full_text)
     if f:
         flags.append(f)
 
