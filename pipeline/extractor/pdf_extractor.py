@@ -146,11 +146,32 @@ def _get_ocr_engine():
 
 
 def detect_pdf_type(pdf_path: str) -> str:
-    """Returns 'typed' or 'scanned'."""
+    """Returns 'typed' or 'scanned'.
+
+    Samples pages spread across the whole document, not just the first 5 --
+    confirmed on two real filings, in both directions: one where the front
+    ~38 pages were typed but the back ~63 (the actual financial statements)
+    were scanned images, and one where the FRONT ~9 pages were scanned but
+    the back ~560 were genuine typed text (a 570-page filing where sampling
+    only the first 5 pages classified the entire document "scanned",
+    routing all 570 pages through full-document OCR at ~20-30s/page --
+    3+ hours, blowing straight through Cloud Run's 3600s request ceiling,
+    for a document that's over 98% natively-readable text). A front-loaded
+    sample can't distinguish either direction; this one can't be fooled by
+    an unrepresentative run of pages at either end.
+    """
     with pdfplumber.open(pdf_path) as pdf:
-        sample_pages = pdf.pages[: min(5, len(pdf.pages))]
+        total = len(pdf.pages)
+        sample_size = min(15, total)
+        if total <= sample_size:
+            indices = range(total)
+        else:
+            # Evenly spaced indices across the whole document, always
+            # including the very first and last page.
+            indices = sorted({round(i * (total - 1) / (sample_size - 1)) for i in range(sample_size)})
+        sample_pages = [pdf.pages[i] for i in indices]
         text_found = sum(1 for p in sample_pages if len(p.extract_text() or "") > 50)
-        return "typed" if text_found >= 3 else "scanned"
+        return "typed" if text_found >= max(3, len(sample_pages) // 2) else "scanned"
 
 
 # Confirmed real pdfplumber bug on a filing's Statement of Changes in Equity
