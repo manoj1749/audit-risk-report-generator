@@ -501,6 +501,25 @@ def _auditor_emphasis_paragraph(flag: AuditFlag) -> tuple[str, str]:
     return obs, rec
 
 
+@_register("AUDITOR_QUALIFIED_OPINION")
+def _auditor_qualified_opinion(flag: AuditFlag) -> tuple[str, str]:
+    e = flag.evidence
+    kind = e.get("opinion_type", "Qualified Opinion")
+    excerpt = e.get("excerpt", "")
+    obs = (
+        f"The statutory auditor's report contains a '{kind}' rather than an "
+        f"unqualified opinion — a formal departure from a clean audit "
+        f"opinion: “{excerpt}…”"
+    )
+    rec = (
+        "Read the full 'Basis for Qualified Opinion' (or equivalent) "
+        "paragraph in the auditor's report and assess how the specific "
+        "matter(s) cited affect the reliability of this filing's figures "
+        "before relying on them."
+    )
+    return obs, rec
+
+
 @_register("MULTI_ENTITY_DOCUMENT")
 def _multi_entity_document(flag: AuditFlag) -> tuple[str, str]:
     e = flag.evidence

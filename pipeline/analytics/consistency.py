@@ -90,6 +90,35 @@ def check_audit_trail_lapse(full_text: str) -> AuditFlag | None:
 _MATERIAL_UNCERTAINTY_HEADING = re.compile(r"material\s+uncertainty\s+related\s+to\s+going\s+concern", re.IGNORECASE)
 _EMPHASIS_OF_MATTER_HEADING = re.compile(r"emphasis\s+of\s+matter", re.IGNORECASE)
 
+# "Qualified Opinion" (and its rarer, more severe siblings "Adverse Opinion"
+# and "Disclaimer of Opinion") are standard, NAMED section headings that
+# replace the routine "Opinion" heading only when the auditor is not giving
+# a clean opinion -- confirmed absent entirely from three known-clean real
+# filings (BPCL, KSDL, ONGC) and present as an exact heading in three
+# known-qualified ones (SAIL, New India Assurance, CESCOM/Chamundeshwari
+# Electricity Supply), each followed immediately by a "Basis for Qualified
+# Opinion" paragraph naming the specific issue.
+_QUALIFIED_OPINION_HEADING = re.compile(
+    r"\b(qualified\s+opinion|adverse\s+opinion|disclaimer\s+of\s+opinion)\b", re.IGNORECASE
+)
+
+
+def check_qualified_opinion(full_text: str) -> AuditFlag | None:
+    """See module comment above _QUALIFIED_OPINION_HEADING."""
+    match = _QUALIFIED_OPINION_HEADING.search(full_text)
+    if not match:
+        return None
+    excerpt = re.sub(r"\s+", " ", full_text[match.start(): match.start() + 500]).strip()
+    return AuditFlag(
+        flag_id="AUDITOR_QUALIFIED_OPINION",
+        area="Auditor's Report — Opinion",
+        severity="High",
+        evidence={"opinion_type": match.group(1).title(), "excerpt": excerpt},
+        note_ids=[],
+        standard_query="qualified opinion adverse disclaimer basis for qualified opinion SA 705",
+        triggered_by=f"Auditor's report contains a '{match.group(1).title()}' rather than an unqualified opinion",
+    )
+
 
 def check_emphasis_of_matter(full_text: str) -> AuditFlag | None:
     """See module comment above _MATERIAL_UNCERTAINTY_HEADING."""
@@ -373,6 +402,10 @@ def run_consistency_checks(
         flags.append(f)
 
     f = check_cag_auditor_reporting_deficiency(full_text)
+    if f:
+        flags.append(f)
+
+    f = check_qualified_opinion(full_text)
     if f:
         flags.append(f)
 
