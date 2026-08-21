@@ -332,6 +332,24 @@ def _actuarial_rate_change(flag: AuditFlag) -> tuple[str, str]:
     return obs, rec
 
 
+@_register("ECL_ALLOWANCE_SURGE")
+def _ecl_allowance_surge(flag: AuditFlag) -> tuple[str, str]:
+    e = flag.evidence
+    obs = (
+        f"The allowance for doubtful debts / expected credit loss on trade "
+        f"receivables grew {_pct(e['pct_change'])}% year-over-year, from "
+        f"₹{_money(e['allowance_prior'])} lakh to ₹{_money(e['allowance_current'])} lakh."
+    )
+    rec = (
+        "Obtain the ECL provisioning workings and confirm the basis for the "
+        "increased allowance -- check whether it reflects a genuine "
+        "deterioration in receivable quality or an assumption change, and "
+        "compare against the growth (or decline) in gross trade receivables "
+        "over the same period."
+    )
+    return obs, rec
+
+
 @_register("CWIP_OVERDUE")
 def _cwip_overdue(flag: AuditFlag) -> tuple[str, str]:
     projects = flag.evidence.get("overdue_projects", [])

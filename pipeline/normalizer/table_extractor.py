@@ -23,6 +23,7 @@ from models.financial import (
     TableData,
     TradePayablesAgeing,
     TradeReceivablesAgeing,
+    TradeReceivablesECLSummary,
 )
 from utils.text_utils import parse_indian_number
 
@@ -113,6 +114,57 @@ def parse_trade_receivables_ageing(table: TableData) -> TradeReceivablesAgeing |
         )
     except Exception as e:
         logger.warning(f"parse_trade_receivables_ageing failed: {e}")
+        return None
+
+
+_ECL_ALLOWANCE_LABEL = re.compile(
+    r"allowance\s+for\s+(?:doubtful\s+debts|expected\s+credit\s+loss)|"
+    r"provision\s+for\s+doubtful\s+debts",
+    re.IGNORECASE,
+)
+_ECL_GROSS_LABEL = re.compile(r"^total$|^total\s+trade\s+receivable", re.IGNORECASE)
+
+
+def parse_trade_receivables_ecl_summary(table: TableData) -> TradeReceivablesECLSummary | None:
+    """A simple 2-year comparative table inside the trade receivables note
+    (distinct from the multi-bucket ageing schedule): a 'Particulars' label
+    column plus exactly two value columns (current year, prior year), with
+    a row labeled like 'Allowance for doubtful debts'. Confirmed against a
+    real filing's Note 7(e) breakdown (SCI FY24-25)."""
+    if _is_empty_table(table):
+        return None
+    try:
+        value_cols = [i for i in range(1, len(table.headers)) if table.headers[i]]
+        if len(value_cols) != 2:
+            return None
+        current_col, prior_col = value_cols[0], value_cols[1]
+
+        allowance_current = allowance_prior = None
+        gross_current = gross_prior = None
+        for row in table.rows:
+            if not row or not row[0]:
+                continue
+            label = str(row[0]).strip()
+            if _ECL_ALLOWANCE_LABEL.search(label):
+                if current_col < len(row):
+                    allowance_current = parse_indian_number(row[current_col])
+                if prior_col < len(row):
+                    allowance_prior = parse_indian_number(row[prior_col])
+            elif _ECL_GROSS_LABEL.match(label) and gross_current is None:
+                if current_col < len(row):
+                    gross_current = parse_indian_number(row[current_col])
+                if prior_col < len(row):
+                    gross_prior = parse_indian_number(row[prior_col])
+
+        if allowance_current is None or allowance_prior is None:
+            return None
+
+        return TradeReceivablesECLSummary(
+            allowance_current=allowance_current, allowance_prior=allowance_prior,
+            gross_current=gross_current, gross_prior=gross_prior,
+        )
+    except Exception as e:
+        logger.warning(f"parse_trade_receivables_ecl_summary failed: {e}")
         return None
 
 
@@ -576,6 +628,7 @@ def parse_analytical_ratios(table: TableData) -> CompanyRatios | None:
 
 _NOTE_KEYWORDS = {
     "trade_receivables_ageing": (["receivable", "debtors"], parse_trade_receivables_ageing),
+    "trade_receivables_ecl": (["receivable", "debtors"], parse_trade_receivables_ecl_summary),
     "trade_payables_ageing": (["payable", "creditors"], parse_trade_payables_ageing),
     "cwip_ageing": (["capital work-in-progress", "capital work in progress", "cwip"], parse_cwip_ageing),
     "ppe_depreciation": (["property, plant and equipment", "property plant and equipment"], parse_ppe_depreciation_rollforward),

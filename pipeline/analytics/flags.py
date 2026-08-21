@@ -9,6 +9,7 @@ from models.financial import (
     NoteSection,
     PPEDepreciationRollforward,
     StructuredTables,
+    TradeReceivablesECLSummary,
 )
 from models.flags import AuditFlag
 
@@ -367,6 +368,32 @@ def check_actuarial_rate_change(actuarial) -> AuditFlag | None:
     return None
 
 
+_ECL_ALLOWANCE_GROWTH_THRESHOLD = 20.0
+
+
+def check_ecl_allowance_surge(ecl: TradeReceivablesECLSummary | None) -> AuditFlag | None:
+    if ecl is None or ecl.allowance_current is None or ecl.allowance_prior in (None, 0):
+        return None
+    pct_change = (ecl.allowance_current - ecl.allowance_prior) / abs(ecl.allowance_prior) * 100
+    if pct_change < _ECL_ALLOWANCE_GROWTH_THRESHOLD:
+        return None
+    return AuditFlag(
+        flag_id="ECL_ALLOWANCE_SURGE",
+        area="Trade Receivables & ECL Provisioning",
+        severity="High" if pct_change >= 50 else "Medium",
+        evidence={
+            "allowance_current": ecl.allowance_current,
+            "allowance_prior": ecl.allowance_prior,
+            "pct_change": pct_change,
+            "gross_current": ecl.gross_current,
+            "gross_prior": ecl.gross_prior,
+        },
+        note_ids=[],
+        standard_query="expected credit loss allowance doubtful debts trade receivables Ind AS 109",
+        triggered_by=f"Allowance for doubtful debts/expected credit loss grew {pct_change:.1f}% year-over-year",
+    )
+
+
 def check_cwip_overdue(cwip_ageing: CWIPAgeing | None) -> AuditFlag | None:
     if cwip_ageing:
         overdue = [p for p in cwip_ageing.projects if p.age_bucket == "more_than_3_years" and p.amount > 0]
@@ -504,6 +531,7 @@ def generate_all_flags(
         check_msme_interest_accrued(structured_tables.msmed_disclosure),
         check_trade_payables_sharp_reduction(movements),
         check_ppe_depreciation_reconciliation(structured_tables.ppe_depreciation),
+        check_ecl_allowance_surge(structured_tables.trade_receivables_ecl),
     ]
     flags.extend(f for f in medium_checks if f is not None)
 

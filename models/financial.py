@@ -90,6 +90,16 @@ class TradeReceivablesAgeing(BaseModel):
     year: str
 
 
+class TradeReceivablesECLSummary(BaseModel):
+    """Current vs. prior year allowance for doubtful debts / expected credit
+    loss, from the trade receivables note's own comparative breakdown (a
+    simpler 2-year table distinct from the single-year ageing schedule)."""
+    allowance_current: float | None = None
+    allowance_prior: float | None = None
+    gross_current: float | None = None
+    gross_prior: float | None = None
+
+
 class TradePayablesAgeing(BaseModel):
     not_due: float | None = None
     zero_to_six_months: float | None = None
@@ -214,3 +224,4 @@ class StructuredTables(BaseModel):
     actuarial_assumptions: ActuarialAssumptions | None = None
     company_ratios: CompanyRatios | None = None
     ppe_depreciation: PPEDepreciationRollforward | None = None
+    trade_receivables_ecl: TradeReceivablesECLSummary | None = None
