@@ -429,7 +429,32 @@ demo.queue()
 if __name__ == "__main__":
     # Cloud Run injects $PORT (default 8080) and requires binding 0.0.0.0;
     # unset locally, so this falls back to Gradio's normal 127.0.0.1:7860.
-    demo.launch(
+    launch_kwargs = dict(
         server_name=os.environ.get("GRADIO_SERVER_NAME", "127.0.0.1"),
         server_port=int(os.environ.get("PORT", 7860)),
     )
+
+    # Confirmed via a real production crash (twice in 24h): Gradio's own
+    # startup self-check (an HTTP HEAD to localhost, retried 5x over ~2.5s
+    # internally) can transiently fail on a fresh Cloud Run instance --
+    # most likely CPU contention from this app's own heavy startup work
+    # racing the check within that narrow window -- and raises a ValueError
+    # that kills the whole process before it ever serves a request. Once
+    # that happens Cloud Run just keeps routing traffic to a dead instance
+    # until health checks catch up, so any user hitting it in that window
+    # gets nothing. Retrying launch() is safe: Gradio's own is_running flag
+    # (already True after the first attempt started the actual server)
+    # means a retry just re-runs the reachability check with more elapsed
+    # time, not a second bind of the port.
+    for attempt in range(1, 4):
+        try:
+            demo.launch(**launch_kwargs)
+            break
+        except ValueError as e:
+            if "localhost is not accessible" not in str(e) or attempt == 3:
+                raise
+            logger.warning(
+                f"demo.launch() startup self-check failed (attempt {attempt}/3), "
+                f"retrying: {e}"
+            )
+            time.sleep(2)
