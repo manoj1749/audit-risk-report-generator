@@ -313,8 +313,20 @@ def check_csr_unspent(csr_details: CSRDetails | None) -> AuditFlag | None:
     return None
 
 
-def check_msme_interest_accrued(msme_disclosure: MSMEDDisclosure | None) -> AuditFlag | None:
+_MSME_INTEREST_IMPLAUSIBLE_FRACTION_OF_ASSETS = 0.05
+
+
+def check_msme_interest_accrued(
+    msme_disclosure: MSMEDDisclosure | None, total_assets: float | None = None
+) -> AuditFlag | None:
     if msme_disclosure and msme_disclosure.interest_accrued_unpaid and msme_disclosure.interest_accrued_unpaid > 0:
+        # Interest accrued on delayed MSME payments should be a small fraction
+        # of the balance sheet -- confirmed a real case where this figure
+        # came back multiple orders of magnitude too large (a wrong-column
+        # extraction), which this guard now suppresses rather than reporting
+        # a nonsensical figure as fact.
+        if total_assets and msme_disclosure.interest_accrued_unpaid > total_assets * _MSME_INTEREST_IMPLAUSIBLE_FRACTION_OF_ASSETS:
+            return None
         return AuditFlag(
             flag_id="MSME_INTEREST_ACCRUED",
             area="MSME Interest Liability",
@@ -528,7 +540,7 @@ def generate_all_flags(
         check_prior_year_tax_recurring(tax_prior, current_tax),
         check_jv_profit_decline(movements),
         check_csr_unspent(structured_tables.csr_details),
-        check_msme_interest_accrued(structured_tables.msmed_disclosure),
+        check_msme_interest_accrued(structured_tables.msmed_disclosure, total_assets),
         check_trade_payables_sharp_reduction(movements),
         check_ppe_depreciation_reconciliation(structured_tables.ppe_depreciation),
         check_ecl_allowance_surge(structured_tables.trade_receivables_ecl),
