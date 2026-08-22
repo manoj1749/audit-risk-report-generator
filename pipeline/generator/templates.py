@@ -520,6 +520,23 @@ def _auditor_qualified_opinion(flag: AuditFlag) -> tuple[str, str]:
     return obs, rec
 
 
+@_register("CWIP_READY_NOT_CAPITALIZED")
+def _cwip_ready_not_capitalized(flag: AuditFlag) -> tuple[str, str]:
+    excerpt = flag.evidence.get("excerpt", "")
+    obs = (
+        "The filing discloses that assets ready for their intended use are "
+        f"still being carried under Capital Work-in-Progress rather than "
+        f"capitalized into Property, Plant & Equipment: “{excerpt}”"
+    )
+    rec = (
+        "Obtain the completion status of the specific CWIP items referenced "
+        "and confirm whether they should be capitalized and depreciated "
+        "under Ind AS 16, irrespective of pending procedural formalities "
+        "such as completion certificates."
+    )
+    return obs, rec
+
+
 @_register("UNCONFIRMED_BALANCES")
 def _unconfirmed_balances(flag: AuditFlag) -> tuple[str, str]:
     e = flag.evidence

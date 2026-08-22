@@ -156,6 +156,47 @@ def check_unconfirmed_balances(full_text: str) -> AuditFlag | None:
     )
 
 
+# CWIP items that are actually ready for use but stay parked in Capital
+# Work-in-Progress (rather than being capitalised into PPE and depreciated)
+# is a distinct, named Ind AS 16 non-compliance -- confirmed in a real
+# filing's auditor's report (CESCOM/Chamundeshwari Electricity Supply: "there
+# are substantial delays in the capitalization of Property, Plant, and
+# Equipment (PPE), which continue to be carried under Capital Work-in-
+# Progress (CWIP)... despite such assets being ready for their intended
+# use... PPE and related depreciation are understated, and CWIP is
+# overstated"), and independently corroborated by CAG's own real finding
+# against a different CPSE (Patratu Vidyut Utpadan Nigam Ltd -- "Capital
+# Work-in-Progress overstated due to non-capitalisation on completion",
+# Report 27/2022, per cpse_audit_findings_and_automation_algorithm.docx).
+# Only one company in our own sample carries this exact wording, so this
+# is single-source within our filings even though the underlying finding
+# type recurs across CAG's reports.
+_CWIP_TERM = r"(?:capital\s+work[\s-]*in[\s-]*progress|cwip)"
+_CWIP_CARRIED_UNDER = rf"continue[sd]?\s+to\s+be\s+carried\s+under\s+{_CWIP_TERM}|retained\s+under\s+{_CWIP_TERM}\s+instead\s+of\s+being\s+capitali[sz]ed"
+_CWIP_READY_NOT_CAPITALIZED = re.compile(
+    rf"(?:{_CWIP_CARRIED_UNDER})[\s\S]{{0,300}}?ready\s+for\s+(?:their|its)\s+intended\s+use|"
+    rf"ready\s+for\s+(?:their|its)\s+intended\s+use[\s\S]{{0,300}}?(?:{_CWIP_CARRIED_UNDER})",
+    re.IGNORECASE,
+)
+
+
+def check_cwip_ready_not_capitalized(full_text: str) -> AuditFlag | None:
+    """See module comment above _CWIP_READY_NOT_CAPITALIZED."""
+    match = _CWIP_READY_NOT_CAPITALIZED.search(full_text)
+    if not match:
+        return None
+    excerpt = re.sub(r"\s+", " ", full_text[match.start(): match.start() + 500]).strip()
+    return AuditFlag(
+        flag_id="CWIP_READY_NOT_CAPITALIZED",
+        area="Capital Work-in-Progress — Ind AS 16 Non-Compliance",
+        severity="Medium",
+        evidence={"excerpt": excerpt},
+        note_ids=[],
+        standard_query="CWIP ready for use not capitalized depreciation understated Ind AS 16",
+        triggered_by="Assets ready for use are disclosed as still being carried under CWIP rather than capitalized",
+    )
+
+
 def check_qualified_opinion(full_text: str) -> AuditFlag | None:
     """See module comment above _QUALIFIED_OPINION_HEADING."""
     match = _QUALIFIED_OPINION_HEADING.search(full_text)
@@ -459,6 +500,10 @@ def run_consistency_checks(
         flags.append(f)
 
     f = check_qualified_opinion(full_text)
+    if f:
+        flags.append(f)
+
+    f = check_cwip_ready_not_capitalized(full_text)
     if f:
         flags.append(f)
 
