@@ -588,13 +588,45 @@ def parse_actuarial_assumptions(table: TableData) -> ActuarialAssumptions | None
         return None
 
 
+# The Schedule III / Companies Act ratio disclosure is a standardized,
+# government-mandated list of exactly 11 named ratios (confirmed verbatim
+# against a real filing's own Note 34: Current ratio, Debt Equity ratio,
+# Debt service coverage ratio, Return on Equity ratio, Inventory Turnover
+# ratio, Trade receivables Turnover ratio, Trade Payables Turnover ratio,
+# Net Capital Turnover Ratio, Net Profit Ratio, Return on Capital Employed,
+# Return on Investment). Without checking a table's row labels actually
+# look like these, extract_all_tables' keyword-match-fails-so-scan-every-
+# note fallback (see _NOTE_KEYWORDS below) causes this parser to silently
+# "succeed" on ANY unrelated 2-3-column note table (confirmed: a broken
+# note-boundary detection swallowed the real ratios note into an earlier,
+# wrongly-titled note's span, so keyword matching found nothing, and this
+# parser then grabbed a completely unrelated revenue-breakdown note's
+# table and reported its row labels as if they were ratio names).
+_KNOWN_RATIO_NAME_TERMS = (
+    "current ratio", "quick ratio", "debt equity", "debt-equity", "debt service coverage",
+    "return on equity", "inventory turnover", "receivables turnover", "payables turnover",
+    "capital turnover", "net profit ratio", "net profit margin", "return on capital employed",
+    "return on investment", "roce", "roe",
+)
+_MIN_RECOGNIZED_RATIO_ROWS = 2
+_SERIAL_COL_HEADER_PATTERN = re.compile(r"^(sr\.?\s*no\.?|s\.?\s*no\.?|sl\.?\s*no\.?|#)$", re.IGNORECASE)
+
+
 def parse_analytical_ratios(table: TableData) -> CompanyRatios | None:
     if _is_empty_table(table):
         logger.debug("parse_analytical_ratios: empty table")
         return None
     try:
-        current_col = 1 if len(table.headers) > 1 else None
-        prior_col = 2 if len(table.headers) > 2 else None
+        # The Schedule III ratio table commonly has a leading serial-number
+        # column ("Sr No") before the ratio name -- confirmed on a real
+        # filing's own Note 34, where the label column is index 1, not 0.
+        label_col = 0
+        for i, h in enumerate(table.headers):
+            if h and _SERIAL_COL_HEADER_PATTERN.match(h.strip()):
+                label_col = i + 1
+                break
+        current_col = label_col + 1 if len(table.headers) > label_col + 1 else None
+        prior_col = label_col + 2 if len(table.headers) > label_col + 2 else None
         variance_col = None
         for i, h in enumerate(table.headers):
             if h and "varian" in h.lower():
@@ -602,7 +634,7 @@ def parse_analytical_ratios(table: TableData) -> CompanyRatios | None:
 
         ratios: list[DisclosedRatio] = []
         for row in table.rows:
-            label = str(row[0]).strip() if row and row[0] else None
+            label = str(row[label_col]).strip() if row and label_col < len(row) and row[label_col] else None
             if not label:
                 continue
             current = parse_indian_number(row[current_col]) if current_col is not None and current_col < len(row) else None
@@ -619,6 +651,16 @@ def parse_analytical_ratios(table: TableData) -> CompanyRatios | None:
             ))
 
         if not ratios:
+            return None
+        recognized = sum(
+            1 for r in ratios
+            if any(term in r.name.lower() for term in _KNOWN_RATIO_NAME_TERMS)
+        )
+        if recognized < _MIN_RECOGNIZED_RATIO_ROWS:
+            logger.debug(
+                f"parse_analytical_ratios: only {recognized} row(s) matched known ratio "
+                "names, rejecting table as not a genuine ratios disclosure"
+            )
             return None
         return CompanyRatios(ratios=ratios, year="current")
     except Exception as e:
@@ -646,9 +688,15 @@ def extract_all_tables(notes: dict[str, NoteSection]) -> StructuredTables:
     result_kwargs: dict = {}
 
     for field_name, (keywords, parser) in _NOTE_KEYWORDS.items():
+        # Word-boundary match, not bare substring containment -- confirmed a
+        # real false positive on "ratio" matching inside "Operations"
+        # (op-e-RATIO-ns), which wrongly selected an unrelated note as the
+        # sole candidate and prevented the real fallback full-scan from ever
+        # running.
+        keyword_patterns = [re.compile(r"\b" + re.escape(kw) + r"\b", re.IGNORECASE) for kw in keywords]
         matched_notes = [
             note for note in notes.values()
-            if any(kw in (note.title + " " + note.raw_text[:200]).lower() for kw in keywords)
+            if any(p.search(note.title + " " + note.raw_text[:200]) for p in keyword_patterns)
         ]
         candidate_notes = matched_notes or list(notes.values())
 
