@@ -197,6 +197,41 @@ def check_cwip_ready_not_capitalized(full_text: str) -> AuditFlag | None:
     )
 
 
+# "Diminution in value" of an investment in a subsidiary/associate/JV is a
+# phrase used specifically when describing an ACTUALLY IDENTIFIED decline
+# (an impairment trigger), unlike the bare word "impairment" which also
+# appears in routine Ind AS 28/36 accounting-policy boilerplate present in
+# nearly every filing regardless of whether any impairment was ever
+# triggered (confirmed: ONGC and SAIL both use "impairment" this way with
+# no real trigger, so a bare-"impairment" check would false-positive
+# broadly). Confirmed real trigger wording in BPCL's Key Audit Matters
+# section: "...which have led to significant diminution in value of BPRL's
+# assets vis-à-vis the previous year and consequent trigger for
+# impairment... the Corporation's investment in the same."
+_INVESTMENT_DIMINUTION = re.compile(
+    r"diminution\s+in\s+(?:the\s+)?value[^.]{0,250}?investment|"
+    r"investment[^.]{0,250}?diminution\s+in\s+(?:the\s+)?value",
+    re.IGNORECASE,
+)
+
+
+def check_investment_diminution(full_text: str) -> AuditFlag | None:
+    """See module comment above _INVESTMENT_DIMINUTION."""
+    match = _INVESTMENT_DIMINUTION.search(full_text)
+    if not match:
+        return None
+    excerpt = re.sub(r"\s+", " ", full_text[max(0, match.start() - 150): match.end() + 200]).strip()
+    return AuditFlag(
+        flag_id="INVESTMENT_DIMINUTION_INDICATOR",
+        area="Investments in Subsidiaries / Associates / Joint Ventures",
+        severity="High",
+        evidence={"excerpt": excerpt},
+        note_ids=[],
+        standard_query="diminution in value impairment investment subsidiary associate joint venture Ind AS 28 Ind AS 36",
+        triggered_by="Filing discloses a diminution in value / impairment trigger for an investment in a subsidiary, associate, or joint venture",
+    )
+
+
 def check_qualified_opinion(full_text: str) -> AuditFlag | None:
     """See module comment above _QUALIFIED_OPINION_HEADING."""
     match = _QUALIFIED_OPINION_HEADING.search(full_text)
@@ -504,6 +539,10 @@ def run_consistency_checks(
         flags.append(f)
 
     f = check_cwip_ready_not_capitalized(full_text)
+    if f:
+        flags.append(f)
+
+    f = check_investment_diminution(full_text)
     if f:
         flags.append(f)
 

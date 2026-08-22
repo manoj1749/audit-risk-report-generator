@@ -537,6 +537,23 @@ def _cwip_ready_not_capitalized(flag: AuditFlag) -> tuple[str, str]:
     return obs, rec
 
 
+@_register("INVESTMENT_DIMINUTION_INDICATOR")
+def _investment_diminution_indicator(flag: AuditFlag) -> tuple[str, str]:
+    excerpt = flag.evidence.get("excerpt", "")
+    obs = (
+        "The filing discloses a diminution in value / impairment trigger "
+        f"for an investment in a subsidiary, associate, or joint venture: "
+        f"“{excerpt}”"
+    )
+    rec = (
+        "Obtain the impairment assessment / valuation workings for the "
+        "specific investment referenced and confirm the resulting "
+        "provision or write-down has been correctly recognized in the "
+        "financial statements."
+    )
+    return obs, rec
+
+
 @_register("UNCONFIRMED_BALANCES")
 def _unconfirmed_balances(flag: AuditFlag) -> tuple[str, str]:
     e = flag.evidence
