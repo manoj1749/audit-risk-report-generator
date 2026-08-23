@@ -16,6 +16,28 @@ from models.flags import AuditFlag
 # ── HIGH SEVERITY ──────────────────────────────────────────────────
 
 
+def check_negative_net_worth(movements: dict[str, MovementRecord]) -> AuditFlag | None:
+    """Total equity < 0 is a going-concern-level fact on its own -- confirmed
+    on a real filing (CESCOM/Chamundeshwari Electricity Supply) where net
+    worth was ₹(2,798.51) crore, worsening 53% YoY, and the tool had no way
+    to surface this at all despite total_equity already being extracted."""
+    m = movements.get("total_equity")
+    if m and m.current is not None and m.current < 0:
+        return AuditFlag(
+            flag_id="NEGATIVE_NET_WORTH",
+            area="Going Concern — Net Worth",
+            severity="High",
+            evidence={
+                "current": m.current, "prior": m.prior,
+                "pct_change": m.pct_change,
+            },
+            note_ids=[],
+            standard_query="going concern negative net worth erosion Ind AS 1 SA 570",
+            triggered_by="Total equity (net worth) is negative",
+        )
+    return None
+
+
 def check_cash_decline(movements: dict[str, MovementRecord], total_assets: float | None) -> AuditFlag | None:
     m = movements.get("cash_equivalents")
     if m and m.pct_change is not None and m.pct_change < -40 and m.materiality_pct is not None and m.materiality_pct > 0.5:
@@ -524,6 +546,7 @@ def generate_all_flags(
 
     high_checks = [
         check_cash_decline(movements, total_assets),
+        check_negative_net_worth(movements),
         check_cfo_pat_divergence(cfo, pat),
         check_rou_material_increase(movements, total_assets),
         check_contingent_liability_jump(structured_tables.contingent_liabilities, total_equity),

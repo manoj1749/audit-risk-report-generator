@@ -447,6 +447,26 @@ def _cag_auditor_reporting_deficiency(flag: AuditFlag) -> tuple[str, str]:
     return obs, rec
 
 
+@_register("NEGATIVE_NET_WORTH")
+def _negative_net_worth(flag: AuditFlag) -> tuple[str, str]:
+    e = flag.evidence
+    prior_clause = ""
+    if e.get("prior") is not None:
+        prior_clause = f", from ₹{_money(e['prior'])} lakh the prior year" + (
+            f" ({_pct(abs(e['pct_change']))}% further erosion)" if e.get("pct_change") is not None else ""
+        )
+    obs = (
+        f"Total equity (net worth) is negative at ₹{_money(e['current'])} lakh{prior_clause} — "
+        "a going-concern-level fact in its own right, independent of any single ratio or movement."
+    )
+    rec = (
+        "Assess management's going-concern basis of preparation and disclosures "
+        "in light of the negative net worth, and evaluate whether the auditor's "
+        "report should include a Material Uncertainty Related to Going Concern paragraph."
+    )
+    return obs, rec
+
+
 @_register("CASHFLOW_HEADER_ERROR")
 def _cashflow_header_error(flag: AuditFlag) -> tuple[str, str]:
     dates = flag.evidence.get("dates_found", [])
@@ -550,6 +570,39 @@ def _investment_diminution_indicator(flag: AuditFlag) -> tuple[str, str]:
         "specific investment referenced and confirm the resulting "
         "provision or write-down has been correctly recognized in the "
         "financial statements."
+    )
+    return obs, rec
+
+
+@_register("FRAUD_INVESTIGATION_DISCLOSURE")
+def _fraud_investigation_disclosure(flag: AuditFlag) -> tuple[str, str]:
+    excerpt = flag.evidence.get("excerpt", "")
+    obs = (
+        "The filing discloses an instance of fraud/embezzlement/"
+        f"misappropriation, or a live regulatory or law-enforcement "
+        f"investigation: “{excerpt}”"
+    )
+    rec = (
+        "Obtain full details of the matter — quantum, recovery status, and "
+        "current stage of any investigation or proceeding — and assess the "
+        "impact on internal controls, the risk of further undetected "
+        "instances, and any related disclosure or provisioning requirements."
+    )
+    return obs, rec
+
+
+@_register("TITLE_DEED_NOT_IN_COMPANY_NAME")
+def _title_deed_not_in_company_name(flag: AuditFlag) -> tuple[str, str]:
+    excerpt = flag.evidence.get("excerpt", "")
+    obs = (
+        "The filing discloses that title deeds for certain immovable "
+        f"property are not held in the company's own name: “{excerpt}”"
+    )
+    rec = (
+        "Identify the specific properties affected and their carrying "
+        "value, obtain an update on the status of title transfer/"
+        "registration, and assess whether this represents a risk to the "
+        "company's ownership rights over the asset."
     )
     return obs, rec
 

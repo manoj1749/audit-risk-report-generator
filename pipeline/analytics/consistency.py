@@ -232,6 +232,78 @@ def check_investment_diminution(full_text: str) -> AuditFlag | None:
     )
 
 
+# "fraud" alone is a routine word in every auditor's report -- it appears in
+# standard SA 200/700 boilerplate describing audit methodology ("a material
+# misstatement resulting from fraud is higher than for one resulting from
+# error, as fraud may involve collusion...", confirmed present in a real,
+# otherwise-clean filing: BPCL). A real, disclosed instance uses much more
+# specific vocabulary -- "embezzlement"/"misappropriation" (rarely used any
+# other way), or names a specific investigating authority (a live
+# regulatory/law-enforcement inquiry). Confirmed via two independent real
+# filings: NABFINS discloses "₹89.88 lakh embezzled by employees/Business &
+# Development Correspondents... only ₹24.85 lakh (27.6%) recovered"; KSDL
+# discloses an ongoing Karnataka Lokayukta police investigation into
+# raw-material tender/purchase irregularities.
+_FRAUD_DISCLOSURE_TERMS = re.compile(
+    r"embezzl\w*|misappropriat\w*|"
+    r"\blokayukta\b|\bsfio\b|enforcement\s+directorate|\bcbi\b|"
+    r"vigilance\s+(?:inquiry|investigation|enquiry)|police\s+investigation",
+    re.IGNORECASE,
+)
+
+
+def check_fraud_investigation_disclosure(full_text: str) -> AuditFlag | None:
+    """See module comment above _FRAUD_DISCLOSURE_TERMS."""
+    match = _FRAUD_DISCLOSURE_TERMS.search(full_text)
+    if not match:
+        return None
+    excerpt = re.sub(r"\s+", " ", full_text[max(0, match.start() - 150): match.start() + 350]).strip()
+    return AuditFlag(
+        flag_id="FRAUD_INVESTIGATION_DISCLOSURE",
+        area="Fraud / Regulatory Investigation Disclosure",
+        severity="High",
+        evidence={"excerpt": excerpt},
+        note_ids=[],
+        standard_query="fraud embezzlement misappropriation regulatory investigation CARO clause 11 SA 240",
+        triggered_by="Filing discloses an instance of fraud/embezzlement/misappropriation or a live regulatory/law-enforcement investigation",
+    )
+
+
+# CARO clause 3(i)(c) requires reporting on immovable property whose title
+# deeds aren't held in the reporting company's own name. Bare "title deed"
+# mentions are routine (every CARO report references the clause, usually to
+# say it's clean -- confirmed on a real filing, BPCL, which mentions "title
+# deeds" only in scoping/exclusion language with no negation nearby). The
+# real signal is a negation near the phrase. Confirmed three independent
+# real-filing wordings: SAIL ("title deeds not held in the name of
+# Company"), SCI ("title deeds were not available in the name of company",
+# and separately "does not have title deeds").
+_TITLE_DEED_NEGATION = re.compile(
+    r"title\s+deeds?[^.]{0,120}?(?:not\s+(?:held|available)\s+in\s+the\s+name|"
+    r"were\s+not\s+available\s+in\s+the\s+name)|"
+    r"(?:does|do)\s+not\s+have\s+title\s+deeds?|"
+    r"non[- ]availability\s+of\s+title\s+deeds?",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def check_title_deed_not_in_company_name(full_text: str) -> AuditFlag | None:
+    """See module comment above _TITLE_DEED_NEGATION."""
+    match = _TITLE_DEED_NEGATION.search(full_text)
+    if not match:
+        return None
+    excerpt = re.sub(r"\s+", " ", full_text[max(0, match.start() - 150): match.end() + 250]).strip()
+    return AuditFlag(
+        flag_id="TITLE_DEED_NOT_IN_COMPANY_NAME",
+        area="Property, Plant & Equipment — Title Deeds",
+        severity="Medium",
+        evidence={"excerpt": excerpt},
+        note_ids=[],
+        standard_query="title deeds immovable property not held in name of company CARO 2020 clause 3(i)(c)",
+        triggered_by="CARO disclosure indicates title deeds of immovable property are not held in the company's own name",
+    )
+
+
 def check_qualified_opinion(full_text: str) -> AuditFlag | None:
     """See module comment above _QUALIFIED_OPINION_HEADING."""
     match = _QUALIFIED_OPINION_HEADING.search(full_text)
@@ -535,6 +607,14 @@ def run_consistency_checks(
         flags.append(f)
 
     f = check_qualified_opinion(full_text)
+    if f:
+        flags.append(f)
+
+    f = check_fraud_investigation_disclosure(full_text)
+    if f:
+        flags.append(f)
+
+    f = check_title_deed_not_in_company_name(full_text)
     if f:
         flags.append(f)
 
