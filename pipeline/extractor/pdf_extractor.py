@@ -31,6 +31,101 @@ def _is_note_ref_token(tok: str) -> bool:
     return bool(_NOTE_REF_TOKEN_PATTERN.match(tok)) and not _is_value_token(tok)
 
 
+# Confirmed real bug on a filing (BPCL): a page lays out two financial
+# statements side by side (Balance Sheet | Statement of Profit and Loss),
+# and pdfplumber's default extract_text() reads straight down the page by
+# vertical position, interleaving both columns' text line-by-line -- "(1)
+# Non-Current Assets" (Balance Sheet, left) merges onto the same line as
+# "I) Revenue From Operations" (P&L, right) because they happen to sit at
+# the same height. This corrupts both the raw excerpt text quoted in
+# generated observations (e.g. CAG comment tables, Key Audit Matter /
+# Auditor's Response tables) and the plain-text table-reconstruction
+# fallback below -- garbled compound labels like "(1) Non-Current Assets
+# I) Revenue From Operations" don't fuzzy-match any canonical line item, so
+# every ratio depending on the Balance Sheet/P&L came back blank.
+_COLUMN_GUTTER_MIN_FRACTION = 0.025
+_COLUMN_GUTTER_SEARCH_LO = 0.32
+_COLUMN_GUTTER_SEARCH_HI = 0.68
+_COLUMN_MIN_SIDE_FRACTION = 0.15
+_COLUMN_LINE_TOLERANCE = 3
+_COLUMN_MIN_WORDS = 20
+
+
+def _extract_text_column_aware(page) -> str | None:
+    """Detect a genuine two-column layout (a real gutter -- a vertical
+    strip with no word content -- near the page's horizontal centre, with
+    a meaningful amount of content on both sides) and extract each column
+    top-to-bottom separately, left column first then right column, instead
+    of pdfplumber's default top-to-bottom-by-position reading order.
+
+    Deliberately conservative: returns None (caller falls back to
+    page.extract_text() unchanged) unless a real, sufficiently wide gutter
+    is found with real content on both sides -- an ordinary single-column
+    page never triggers this, so single-column extraction is untouched."""
+    words = page.extract_words(x_tolerance=3, y_tolerance=3, keep_blank_chars=False)
+    if len(words) < _COLUMN_MIN_WORDS:
+        return None
+
+    page_width = page.width
+    lo = page_width * _COLUMN_GUTTER_SEARCH_LO
+    hi = page_width * _COLUMN_GUTTER_SEARCH_HI
+    step = page_width * 0.005
+    if step <= 0:
+        return None
+
+    candidates = []
+    x = lo
+    while x <= hi:
+        if not any(w["x0"] < x < w["x1"] for w in words):
+            candidates.append(x)
+        x += step
+    if not candidates:
+        return None
+
+    # Group consecutive candidate points into runs; the widest run is the
+    # real gutter -- avoids a single stray gap on an ordinary single-column
+    # line being mistaken for a column boundary.
+    runs = []
+    run_start = candidates[0]
+    prev = candidates[0]
+    for c in candidates[1:]:
+        if c - prev > step * 1.5:
+            runs.append((run_start, prev))
+            run_start = c
+        prev = c
+    runs.append((run_start, prev))
+    widest = max(runs, key=lambda r: r[1] - r[0])
+    if widest[1] - widest[0] < page_width * _COLUMN_GUTTER_MIN_FRACTION:
+        return None
+    gutter_mid = (widest[0] + widest[1]) / 2
+
+    left_words = [w for w in words if w["x1"] <= gutter_mid]
+    right_words = [w for w in words if w["x0"] >= gutter_mid]
+    min_side = len(words) * _COLUMN_MIN_SIDE_FRACTION
+    if len(left_words) < min_side or len(right_words) < min_side:
+        return None
+
+    def _words_to_text(col_words: list[dict]) -> str:
+        col_words = sorted(col_words, key=lambda w: (w["top"], w["x0"]))
+        lines: list[list[dict]] = []
+        for w in col_words:
+            if lines and abs(w["top"] - lines[-1][-1]["top"]) <= _COLUMN_LINE_TOLERANCE:
+                lines[-1].append(w)
+            else:
+                lines.append([w])
+        out_lines = []
+        for line in lines:
+            line_sorted = sorted(line, key=lambda w: w["x0"])
+            out_lines.append(" ".join(w["text"] for w in line_sorted))
+        return "\n".join(out_lines)
+
+    return _words_to_text(left_words) + "\n" + _words_to_text(right_words)
+
+
+def _extract_page_text(page) -> str:
+    return _extract_text_column_aware(page) or page.extract_text(x_tolerance=3, y_tolerance=3) or ""
+
+
 def _parse_text_line(line: str) -> tuple[str, str | None, list[str]] | None:
     """Reconstruct (label, note_ref, [current, [prior]]) from one line of
     plain extracted text, by taking up to 2 trailing value-shaped tokens and
@@ -99,9 +194,19 @@ def _reconstruct_table_from_text(text: str, page_num: int) -> TableData | None:
 
 
 def _label_fill_ratio(rows: list[list]) -> float:
+    """Fraction of rows whose first cell looks like a real label. A bare
+    number sitting in column 0 doesn't count -- confirmed real failure mode
+    (BPCL): when the grid strategy drops the label column entirely rather
+    than leaving it blank, the value itself lands in column 0, and a naive
+    truthiness check reads that as "100% filled" and never triggers the
+    text-reconstruction fallback below."""
     if not rows:
         return 0.0
-    filled = sum(1 for r in rows if r and r[0] not in (None, "") and str(r[0]).strip())
+    filled = sum(
+        1 for r in rows
+        if r and r[0] not in (None, "") and str(r[0]).strip()
+        and not _is_value_token(str(r[0]).strip())
+    )
     return filled / len(rows)
 
 
@@ -262,7 +367,7 @@ def _extract_tables_from_page(page, page_num: int) -> list[TableData]:
     # see _reconstruct_table_from_text for how/why). Try rebuilding from
     # plain text instead of silently losing whatever's on this page.
     if not tables or all(_label_fill_ratio(t.rows) < 0.5 for t in tables):
-        text = page.extract_text(x_tolerance=3, y_tolerance=3) or ""
+        text = _extract_page_text(page)
         reconstructed = _reconstruct_table_from_text(text, page_num)
         best_existing = max((_label_fill_ratio(t.rows) for t in tables), default=0.0)
         if reconstructed and _label_fill_ratio(reconstructed.rows) > best_existing:
@@ -307,7 +412,7 @@ def _extract_typed_pdf(pdf_path: str) -> list[PageContent]:
     with pdfplumber.open(pdf_path) as pdf:
         total = len(pdf.pages)
         for i, page in enumerate(pdf.pages):
-            raw_text = page.extract_text(x_tolerance=3, y_tolerance=3) or ""
+            raw_text = _extract_page_text(page)
             tables = _extract_tables_from_page(page, i + 1)
             ocr = False
             if len(raw_text.strip()) < _BLANK_PAGE_CHAR_THRESHOLD and page.images:

@@ -508,7 +508,13 @@ def parse_msmed_disclosure(table: TableData) -> MSMEDDisclosure | None:
             if "principal" in label:
                 principal = val
             elif "accrued" in label and "further" not in label:
-                interest_accrued = val
+                # Confirmed real false positive (CESCOM): a bare "accrued" match
+                # picked up an unrelated "Accrued expenses and other liabilities"
+                # row from a broader liabilities note that only incidentally also
+                # mentions MSME elsewhere -- genuine MSMED Act disclosure rows are
+                # always phrased as "interest accrued", never bare "accrued".
+                if "interest" in label:
+                    interest_accrued = val
             elif "further" in label:
                 interest_further_due = val
             elif "interest" in label:
