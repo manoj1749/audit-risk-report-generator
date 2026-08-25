@@ -12,8 +12,9 @@ import queue
 import tempfile
 import threading
 import time
-from datetime import datetime
 from pathlib import Path
+
+from utils.timezone import format_ist, now_ist
 
 import gradio as gr
 import pandas as pd
@@ -252,7 +253,7 @@ def run_pipeline(primary_path, excel_path, progress: gr.Progress = gr.Progress()
         report = AuditReport(
             company_name=extracted.company_name,
             period=extracted.period,
-            generated_at=datetime.now(),
+            generated_at=now_ist(),
             extraction_method=extracted.extraction_method,
             summary={
                 "High": sum(1 for o in observations if o.risk_rating == "High"),
@@ -291,7 +292,7 @@ def run_pipeline(primary_path, excel_path, progress: gr.Progress = gr.Progress()
     if report.company_name:
         header_lines.append(f"### {report.company_name}")
     if report.period:
-        header_lines.append(f"Period: {report.period} · Generated: {report.generated_at.strftime('%d %b %Y %H:%M')}")
+        header_lines.append(f"Period: {report.period} · Generated: {format_ist(report.generated_at)}")
     header_md = "\n\n".join(header_lines)
 
     mov_df = _movements_dataframe(report.key_movements) if report.key_movements else pd.DataFrame(

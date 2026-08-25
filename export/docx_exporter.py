@@ -13,6 +13,7 @@ from export.charts import (
     generate_risk_distribution_chart,
 )
 from models.report import AuditReport
+from utils.timezone import format_ist
 
 _RISK_FILL = {"High": "F8D7DA", "Medium": "FFF3CD", "Low": "D4EDDA"}
 _DISCLAIMER_FILL = "F0F0F0"
@@ -73,7 +74,7 @@ def export_report_docx(report: AuditReport) -> bytes:
         subtitle_run.italic = True
 
     generated = document.add_paragraph()
-    generated.add_run(f"Generated: {report.generated_at.strftime('%d %b %Y %H:%M')}").italic = True
+    generated.add_run(f"Generated: {format_ist(report.generated_at)}").italic = True
 
     document.add_paragraph()
 

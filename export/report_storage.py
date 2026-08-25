@@ -7,6 +7,7 @@ from datetime import datetime
 from loguru import logger
 
 import config
+from utils.timezone import format_ist, now_ist
 
 _client = None
 
@@ -32,7 +33,7 @@ def upload_report(docx_bytes: bytes, company_name: str | None, period: str | Non
     if not config.REPORTS_BUCKET:
         return None
     try:
-        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        timestamp = now_ist().strftime("%Y%m%d-%H%M%S")
         slug = _slugify(company_name or period or "report")
         object_name = f"reports/{timestamp}-{slug}.docx"
         bucket = _get_client().bucket(config.REPORTS_BUCKET)
@@ -77,7 +78,7 @@ def list_recent_reports(limit: int = 20) -> list[ReportListing]:
             company = meta.get("company_name") or ""
             period = meta.get("period") or ""
             label = " — ".join(p for p in (company, period) if p) or b.name.rsplit("/", 1)[-1]
-            when = b.time_created.strftime("%d %b %Y %H:%M") if b.time_created else ""
+            when = format_ist(b.time_created) if b.time_created else ""
             listings.append(ReportListing(
                 object_name=b.name,
                 display_name=f"{label} ({when})" if when else label,
