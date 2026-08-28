@@ -145,3 +145,30 @@ echo "Deployed. URL:"
 gcloud run services describe "$SERVICE_NAME" \
     --project "$PROJECT_ID" --region "$REGION" \
     --format='value(status.url)'
+
+# `gcloud run deploy` is documented to atomically deploy AND route 100%
+# traffic to the new revision, but this was confirmed to silently fail
+# twice in a row on this exact service (2026-08-27/28): the new revision
+# built, pushed, and reached Ready, but traffic stayed on a stale revision
+# from days earlier -- the command still printed its normal "serving 100
+# percent of traffic" success message throughout, so nothing in its own
+# output flagged the mismatch. Cause not confirmed (possibly related to
+# this service's tagged-but-trafficless revisions from earlier GPU
+# testing); rather than chase that, verify the outcome directly and
+# self-heal instead of trusting the deploy command's stdout.
+SERVICE_JSON=$(gcloud run services describe "$SERVICE_NAME" \
+    --project "$PROJECT_ID" --region "$REGION" --format=json)
+READY=$(echo "$SERVICE_JSON" | python3 -c "import json,sys; print(json.load(sys.stdin)['status']['latestReadyRevisionName'])")
+LIVE=$(echo "$SERVICE_JSON" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+live = [t['revisionName'] for t in d['status']['traffic'] if t.get('percent') == 100]
+print(live[0] if live else '')
+")
+if [ "$READY" != "$LIVE" ]; then
+    echo
+    echo "WARNING: latest ready revision ($READY) is not the one serving 100% of traffic ($LIVE)."
+    echo "Fixing by routing traffic to latest..."
+    gcloud run services update-traffic "$SERVICE_NAME" \
+        --project "$PROJECT_ID" --region "$REGION" --to-latest
+fi
