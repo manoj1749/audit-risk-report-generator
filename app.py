@@ -197,6 +197,20 @@ def run_pipeline(primary_path, excel_path, progress: gr.Progress = gr.Progress()
         ratios = compute_ratios(mapped_items)
         flags = generate_all_flags(movements, mapped_items, structured_tables, notes, extracted.full_text)
         flags += run_consistency_checks(structured_tables, notes, extracted.full_text)
+        if not flags:
+            from pipeline.analytics.flags import check_insufficient_financial_data
+
+            def _movement_value(key: str) -> float | None:
+                m = movements.get(key)
+                return m.current if m else None
+
+            f = check_insufficient_financial_data(
+                _movement_value("total_assets"),
+                _movement_value("revenue_from_operations"),
+                _movement_value("pat"),
+            )
+            if f:
+                flags.append(f)
         _stage_done("analytics_flagging")
         yield unchanged(log(
             f"✅ {len(flags)} flags generated "

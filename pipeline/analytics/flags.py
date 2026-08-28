@@ -576,6 +576,39 @@ def check_unpaid_dividend(notes: dict[str, NoteSection]) -> AuditFlag | None:
     return None
 
 
+# A document producing zero mapped financial-statement figures is not the
+# same thing as a clean audit -- confirmed real case: a file uploaded as
+# an "annual report" (psb-alliance) turned out to be a Form MGT-7 ROC
+# compliance filing with no Balance Sheet, P&L, auditor's report, or notes
+# to accounts at all. Every other check in this pipeline null-checks and
+# silently produces nothing when its inputs are missing, so the tool's
+# overall output for a case like this was an unqualified H/M/L/T = 0/0/0/0
+# -- indistinguishable from a genuinely clean filing, when the real
+# situation is that no financial content was ever examined. Anchored on
+# the 3 figures every real filing has and this pipeline is built to find
+# (total assets, revenue, profit after tax); if all 3 are missing, there
+# is no financial statement to have analyzed.
+def check_insufficient_financial_data(
+    total_assets: float | None, revenue: float | None, pat: float | None
+) -> AuditFlag | None:
+    if total_assets is None and revenue is None and pat is None:
+        return AuditFlag(
+            flag_id="INSUFFICIENT_FINANCIAL_DATA",
+            area="Data Coverage",
+            severity="High",
+            evidence={},
+            note_ids=[],
+            standard_query="financial statements not found document scope Ind AS 1",
+            triggered_by=(
+                "No Balance Sheet, P&L, or cash flow figures could be mapped from this document -- "
+                "it may not contain audit-able financial statements (e.g. a compliance form, notes-only "
+                "excerpt, or wrong attachment). Every other observation in this report should be treated "
+                "as unverified, not as a clean result, until this is confirmed."
+            ),
+        )
+    return None
+
+
 def generate_all_flags(
     movements: dict[str, MovementRecord],
     mapped_items: dict[str, MappedLineItem],

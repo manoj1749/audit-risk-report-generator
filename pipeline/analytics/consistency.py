@@ -754,6 +754,190 @@ def _extract_lease_rou_components(
     return lease_liability_total, rou_additions
 
 
+# A financial regulator (SEBI, RBI, IRDAI) formally levying a penalty is a
+# distinct, rare disclosure -- confirmed real wording (StockHolding
+# Services): "**SEBI has levied penalties on account of irregularities
+# found during the inspection." Found as a bare footnote asterisk under a
+# generic "Other expenses" line -- no dedicated rule looked for it at all,
+# so a real regulatory-action disclosure was invisible regardless of
+# heading/section, which is exactly why this check searches the whole
+# document rather than anchoring to any specific note.
+_REGULATORY_PENALTY = re.compile(
+    r"(?:sebi|rbi|irdai|reserve\s+bank\s+of\s+india|securities\s+and\s+exchange\s+board)"
+    r"[^.]{0,60}?has\s+(?:levied|imposed)\s+(?:a\s+)?penalt\w*",
+    re.IGNORECASE,
+)
+
+
+def check_regulatory_penalty_disclosure(full_text: str) -> AuditFlag | None:
+    """See module comment above _REGULATORY_PENALTY."""
+    match = _REGULATORY_PENALTY.search(full_text)
+    if not match:
+        return None
+    excerpt = re.sub(r"\s+", " ", full_text[max(0, match.start() - 150): match.end() + 250]).strip()
+    return AuditFlag(
+        flag_id="REGULATORY_PENALTY_DISCLOSURE",
+        area="Regulatory Compliance",
+        severity="High",
+        evidence={"excerpt": excerpt},
+        note_ids=[],
+        standard_query="regulatory penalty SEBI RBI IRDAI enforcement action disclosure",
+        triggered_by="Filing discloses a penalty levied by a financial regulator",
+    )
+
+
+# A government-mandated write-off directive against a subsidy/grant
+# receivable that a PSU/discom still carries as an asset is a specific,
+# concrete going-concern-adjacent signal -- confirmed real wording
+# (Chamundeshwari Electricity Supply): "As per Government Order...CESC was
+# directed to write-off the subsidy arrears..." disclosed alongside
+# INR 24,813.57 lakhs of GoK subsidy receivables "which represents the
+# remaining balance after a substantial portion of earlier dues were
+# written off" -- i.e. a real precedent for the same government ordering
+# a write-off exists, and a balance from the same receivable category is
+# still on the books.
+_GOVT_ORDER_HEADING = re.compile(r"government\s+order", re.IGNORECASE)
+_WRITEOFF_DIRECTIVE = re.compile(r"direct\w*\s+to\s+write[- ]?off|write[- ]?off\s+the", re.IGNORECASE)
+_GOVT_ORDER_WINDOW = 500
+
+
+def check_govt_receivable_writeoff_directive(full_text: str) -> AuditFlag | None:
+    """See module comment above _WRITEOFF_DIRECTIVE. "Government order" alone
+    is too common a phrase to anchor on directly (a real filing can mention
+    several unrelated government orders) -- confirmed on Chamundeshwari
+    itself, where the FIRST "Government Order" mention in the document is
+    an unrelated free-electricity subsidy scheme, ~99,500 characters before
+    the real write-off directive. Scans every occurrence's own local
+    window instead of just the first."""
+    match = None
+    for heading in _GOVT_ORDER_HEADING.finditer(full_text):
+        window = full_text[heading.start(): heading.start() + _GOVT_ORDER_WINDOW]
+        wo_match = _WRITEOFF_DIRECTIVE.search(window)
+        if wo_match:
+            match_start = heading.start()
+            match_end = heading.start() + wo_match.end()
+            match = True
+            break
+    if not match:
+        return None
+    excerpt = re.sub(r"\s+", " ", full_text[max(0, match_start - 150): match_end + 300]).strip()
+    return AuditFlag(
+        flag_id="GOVT_RECEIVABLE_WRITEOFF_DIRECTIVE",
+        area="Government/Regulatory Receivables",
+        severity="High",
+        evidence={"excerpt": excerpt},
+        note_ids=[],
+        standard_query="government order write off subsidy grant receivable recoverability Ind AS 109",
+        triggered_by="A government order directing write-off of a subsidy/grant receivable is disclosed -- verify whether any remaining balance of the same category is still carried as an asset",
+    )
+
+
+# An AMC/mutual-fund manager that has transferred away its entire managed
+# assets and stopped earning management fees is functionally dormant, even
+# if its going-concern basis is formally unmodified -- confirmed real
+# wording (IDBI AMC): "IDBI AMC transferred entire Assets Under Management
+# (AUM) of IDBI Mutual Fund schemes to LIC AMC. Therefore...IDBI AMC has
+# not earned any mutual fund management fee." This was the filing's actual
+# headline risk (a fee-less AMC sitting on a SEBI license with a hard
+# expiry date and undecided wind-up) and no existing rule had any way to
+# surface it -- the only flag the tool produced was a routine audit-trail
+# lapse.
+_REGULATORY_MANDATE_LOSS = re.compile(
+    r"transferred\s+(?:its\s+|the\s+)?entire\s+assets?\s+under\s+management|"
+    r"has\s+not\s+earned\s+any\s+(?:mutual\s+fund\s+)?management\s+fee",
+    re.IGNORECASE,
+)
+
+
+def check_regulatory_mandate_loss(full_text: str) -> AuditFlag | None:
+    """See module comment above _REGULATORY_MANDATE_LOSS."""
+    match = _REGULATORY_MANDATE_LOSS.search(full_text)
+    if not match:
+        return None
+    excerpt = re.sub(r"\s+", " ", full_text[max(0, match.start() - 150): match.end() + 300]).strip()
+    return AuditFlag(
+        flag_id="REGULATORY_MANDATE_LOSS",
+        area="Business Continuity — Regulatory Mandate",
+        severity="High",
+        evidence={"excerpt": excerpt},
+        note_ids=[],
+        standard_query="asset management company transfer AUM management fee discontinuation going concern",
+        triggered_by="Filing discloses transfer of the entity's entire managed assets/mandate to another party and loss of the associated fee income",
+    )
+
+
+# An auditor's report designates specific judgment areas as Key Audit
+# Matters -- when one of them is an asset-impairment testing judgment
+# (fleet, plant, refinery, goodwill, CGU), that's a deliberate signal the
+# auditor considers this area to carry meaningful estimation uncertainty,
+# distinct from routine Ind AS 36 accounting-policy boilerplate that
+# appears in nearly every filing regardless of real impairment risk.
+# Confirmed real KAM title wording (SCI): "Impairment testing of Fleets in
+# line with the Ind AS 36" listed as a numbered Key Audit Matter. Kept
+# sector-agnostic (asset type is captured, not hardcoded) so it covers
+# fleet (shipping), plant/CGU (steel, manufacturing), and refinery (oil &
+# gas) impairment judgments with one rule instead of one per sector.
+_KEY_AUDIT_MATTER_HEADING = re.compile(r"key\s+audit\s+matters?\b", re.IGNORECASE)
+# Non-greedy, stopping at the KAM title's own trailing connector words
+# ("in line with the Ind AS 36...") rather than consuming into the
+# auditor's response text that follows -- confirmed real KAM title (SCI):
+# "Impairment testing of Fleets in line with the Ind AS 36" should capture
+# just "Fleets", not "Fleets in line with the Ind AS 36 We have...".
+_KAM_IMPAIRMENT_TESTING = re.compile(
+    r"impairment\s+testing\s+of\s+(.{1,50}?)(?:\s+in\s+line\s+with|\s+under\b|\s+as\s+per\b|[.\n])",
+    re.IGNORECASE,
+)
+_KAM_SECTION_WINDOW = 6000
+
+
+def check_kam_asset_impairment(full_text: str) -> AuditFlag | None:
+    """See module comment above _KEY_AUDIT_MATTER_HEADING."""
+    for heading in _KEY_AUDIT_MATTER_HEADING.finditer(full_text):
+        window = full_text[heading.end(): heading.end() + _KAM_SECTION_WINDOW]
+        match = _KAM_IMPAIRMENT_TESTING.search(window)
+        if match:
+            excerpt = re.sub(r"\s+", " ", window[max(0, match.start() - 100): match.end() + 300]).strip()
+            return AuditFlag(
+                flag_id="KAM_ASSET_IMPAIRMENT",
+                area="Key Audit Matter — Asset Impairment Judgment",
+                severity="Medium",
+                evidence={"asset": match.group(1).strip(), "excerpt": excerpt},
+                note_ids=[],
+                standard_query="impairment testing key audit matter Ind AS 36 cash generating unit",
+                triggered_by=f"Auditor's report designates impairment testing of {match.group(1).strip()} as a Key Audit Matter",
+            )
+    return None
+
+
+# IBNR/IBNER (Incurred But Not [Enough] Reported) claims-reserve estimation
+# is insurance-specific actuarial judgment vocabulary that essentially
+# never appears outside an insurer's filing -- confirmed real wording (New
+# India Assurance): "actuarial valuation of liability in respect of Claims
+# Incurred but Not Reported (IBNR) and those Incurred but Not Enough
+# Reported (IBNER)... is as certified by the Company's Appointed Actuary."
+# The generic rule set has no reserve-adequacy or reinsurance-recoverable
+# rule at all, despite this being flagged as a Key Audit Matter in the
+# filing itself.
+_IBNR_RESERVE = re.compile(r"incurred\s+but\s+not\s+(?:reported|enough\s+reported)|\bibnr\b|\bibner\b", re.IGNORECASE)
+
+
+def check_insurance_reserve_adequacy(full_text: str) -> AuditFlag | None:
+    """See module comment above _IBNR_RESERVE."""
+    match = _IBNR_RESERVE.search(full_text)
+    if not match:
+        return None
+    excerpt = re.sub(r"\s+", " ", full_text[max(0, match.start() - 150): match.end() + 300]).strip()
+    return AuditFlag(
+        flag_id="INSURANCE_RESERVE_ADEQUACY",
+        area="Insurance — Claims Reserve Adequacy",
+        severity="Medium",
+        evidence={"excerpt": excerpt},
+        note_ids=[],
+        standard_query="IBNR IBNER claims reserve adequacy actuarial estimation insurance",
+        triggered_by="Filing discloses actuarial claims-reserve estimation (IBNR/IBNER) — a judgment area with no dedicated coverage-adequacy check in this rule set",
+    )
+
+
 def run_consistency_checks(
     structured_tables: StructuredTables, notes: dict[str, NoteSection], full_text: str
 ) -> list[AuditFlag]:
@@ -816,6 +1000,26 @@ def run_consistency_checks(
         flags.append(f)
 
     f = check_emphasis_of_matter(full_text)
+    if f:
+        flags.append(f)
+
+    f = check_regulatory_penalty_disclosure(full_text)
+    if f:
+        flags.append(f)
+
+    f = check_govt_receivable_writeoff_directive(full_text)
+    if f:
+        flags.append(f)
+
+    f = check_regulatory_mandate_loss(full_text)
+    if f:
+        flags.append(f)
+
+    f = check_kam_asset_impairment(full_text)
+    if f:
+        flags.append(f)
+
+    f = check_insurance_reserve_adequacy(full_text)
     if f:
         flags.append(f)
 
