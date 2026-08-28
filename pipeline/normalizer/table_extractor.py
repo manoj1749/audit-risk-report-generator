@@ -47,23 +47,45 @@ def _is_empty_table(table: TableData | None) -> bool:
     return False
 
 
-def _match_bucket_columns(headers: list[str]) -> dict[str, int]:
-    """Map canonical ageing bucket names to header column indices via fuzzy match."""
-    mapping: dict[str, int] = {}
-    for bucket, aliases in _AGEING_BUCKET_ALIASES.items():
-        best_score = 0
-        best_idx = None
+def _match_bucket_columns_generic(
+    headers: list[str], bucket_aliases: dict[str, list[str]], threshold: int = 70
+) -> dict[str, int]:
+    """Map canonical ageing bucket names to header column indices via fuzzy
+    match, as a proper assignment: no header column can be claimed by more
+    than one bucket, and no bucket claims more than one column. Confirmed
+    real bug in the previous per-bucket "take whichever header scores best"
+    approach: short, similar bucket-label phrases ("Less than 1 year",
+    "1-2 years", "2-3 years", "More than 3 years") fuzzy-cross-match each
+    other at scores well over threshold, so nothing stopped two buckets
+    from both claiming the same column (silently corrupting the ageing
+    breakdown by reading one column's value into two buckets), or a later
+    bucket's better-scoring claim on a column from displacing an earlier
+    bucket that had already, correctly, claimed it. Resolved here as a
+    greedy assignment: strongest (bucket, column) match wins first, then
+    both are removed from further consideration."""
+    candidates: list[tuple[float, str, int]] = []
+    for bucket, aliases in bucket_aliases.items():
         for i, header in enumerate(headers):
             if not header:
                 continue
-            for alias in aliases:
-                score = fuzz.partial_ratio(header.lower(), alias)
-                if score > best_score:
-                    best_score = score
-                    best_idx = i
-        if best_score > 70 and best_idx is not None:
-            mapping[bucket] = best_idx
+            score = max((fuzz.partial_ratio(header.lower(), alias) for alias in aliases), default=0)
+            if score > threshold:
+                candidates.append((score, bucket, i))
+    candidates.sort(key=lambda c: -c[0])
+
+    mapping: dict[str, int] = {}
+    used_cols: set[int] = set()
+    for _score, bucket, col in candidates:
+        if bucket in mapping or col in used_cols:
+            continue
+        mapping[bucket] = col
+        used_cols.add(col)
     return mapping
+
+
+def _match_bucket_columns(headers: list[str]) -> dict[str, int]:
+    """Map canonical ageing bucket names to header column indices via fuzzy match."""
+    return _match_bucket_columns_generic(headers, _AGEING_BUCKET_ALIASES)
 
 
 def _find_total_col(headers: list[str]) -> int | None:
@@ -221,14 +243,13 @@ def parse_cwip_ageing(table: TableData) -> CWIPAgeing | None:
             "2_to_3_years": ["2-3 years", "2 - 3 years"],
             "more_than_3_years": ["more than 3 years", "above 3 years"],
         }
-        col_to_bucket: dict[int, str] = {}
-        for bucket, aliases in bucket_headers.items():
-            for i, header in enumerate(table.headers):
-                if not header:
-                    continue
-                if any(fuzz.partial_ratio(header.lower(), alias) > 70 for alias in aliases):
-                    col_to_bucket[i] = bucket
-                    break
+        # Assignment, not "first/best match per bucket independently" --
+        # see _match_bucket_columns_generic's own docstring for the
+        # confirmed real bug this replaced (one column silently claimed by
+        # multiple buckets, or a later bucket displacing an earlier one's
+        # already-correct column).
+        bucket_to_col = _match_bucket_columns_generic(table.headers, bucket_headers)
+        col_to_bucket = {col: bucket for bucket, col in bucket_to_col.items()}
         # A genuine Schedule III CWIP ageing table always carries multiple
         # of these 4 fixed bucket columns -- matching only one is the
         # signature of a wrong table entirely, not a real ageing schedule
