@@ -195,7 +195,7 @@ def run_pipeline(primary_path, excel_path, progress: gr.Progress = gr.Progress()
         from pipeline.analytics.consistency import run_consistency_checks
         movements = compute_movements(mapped_items)
         ratios = compute_ratios(mapped_items)
-        flags = generate_all_flags(movements, mapped_items, structured_tables, notes)
+        flags = generate_all_flags(movements, mapped_items, structured_tables, notes, extracted.full_text)
         flags += run_consistency_checks(structured_tables, notes, extracted.full_text)
         _stage_done("analytics_flagging")
         yield unchanged(log(

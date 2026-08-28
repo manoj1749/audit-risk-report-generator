@@ -2,6 +2,7 @@
 import re
 
 from loguru import logger
+from rapidfuzz.distance import Levenshtein
 
 from models.financial import CSRDetails, NoteSection, StructuredTables
 from models.flags import AuditFlag
@@ -33,8 +34,77 @@ _CIN_PATTERN = re.compile(r"\b[LUu]\d{5}[A-Za-z]{2}\d{4}[A-Za-z]{3}\d{6}\b")
 # substitute for this either, since the filing's own CIN appeared 43 times
 # but a genuine second bundled entity can legitimately appear just once
 # (e.g. only on its own signature page).
-_RELATED_PARTY_CONTEXT = re.compile(r"arm'?s\s+length|related\s+part(?:y|ies)", re.IGNORECASE)
-_RELATED_PARTY_WINDOW = 300
+_RELATED_PARTY_CONTEXT = re.compile(
+    r"arm'?s\s+length|related\s+part(?:y|ies)|"
+    # A SEBI mutual-fund annual report legally must name Sponsor, Trustee,
+    # and AMC together, each with its own CIN -- confirmed false positive
+    # (Bank of India Investment Managers): the Trustee's CIN sits in a
+    # three-column Sponsor/Trustee/Investment-Manager back-cover block,
+    # ~410 chars past the word "Trustee" (each column's full address comes
+    # between the label and its CIN), not because a second company's
+    # financials are bundled in.
+    r"\btrustee\b|\bsponsor\b|"
+    # A director's personal, non-company affiliations (a charitable trust
+    # or foundation they chair/founded, mentioned in their board bio) can
+    # carry their own CIN without representing bundled financials at all --
+    # confirmed false positive (SCI): one of 4 "distinct CINs" traced
+    # directly to a director's personal charitable foundation, cited in his
+    # bio.
+    r"charitable\s+(?:trust|foundation)|\bfoundation\b|"
+    # CARO's "other auditors' report on components" clause, and a group's
+    # mandatory Rule 5/AOC-1 "particulars of subsidiaries, associates and
+    # joint ventures" schedule, both routinely cite a subsidiary/associate/
+    # JV's own CIN when reporting on a group filing. Confirmed false
+    # positive on 2 real filings: BPCL ("...subsidiaries, associates and
+    # joint ventures included in the consolidated financial statements...
+    # IHB Limited (CIN: ...), a Joint..."), and SCI ("...joint ventures and
+    # subsidiary Companies included in consolidated financial statements:
+    # ... U61100WB2016GOI217822 Subsidiary" -- reversed term order from
+    # BPCL's, so the anchor below doesn't hardcode an enumeration order,
+    # just requires the fixed "included in ... consolidated financial
+    # statements" phrase nearby). Standard group-structure disclosure, not
+    # evidence of a bundled document.
+    r"included\s+in\s+(?:the\s+)?consolidated\s+financial\s+statements",
+    re.IGNORECASE,
+)
+_RELATED_PARTY_WINDOW = 500
+
+# A bare AOC-1-style ageing/particulars table often labels each row just
+# "Subsidiary" or "Joint Venture" immediately next to that row's CIN, with
+# no nearby heading phrase at all -- confirmed false positive (SAIL): 9 of
+# SAIL's 10 detected CINs come from a "List of Joint Ventures" table where
+# every row reads like "GEDCOL SAIL Power Corporation Limited
+# U40300OR2018SGC029410 Joint Venture" -- the label sits right AFTER the
+# CIN, not before it, so the backward-only window above can't see it. This
+# needs its own small, bidirectional check instead.
+_ENTITY_TYPE_LABEL = re.compile(r"\b(?:subsidiary|associate|joint\s+venture)\b", re.IGNORECASE)
+_ENTITY_TYPE_LABEL_WINDOW = 60
+
+# Schedule III mandates a "relationship with struck off companies"
+# disclosure -- a table of unrelated, unaffiliated shell companies that
+# happen to hold shares in or owe/are owed trivial amounts by the
+# reporting company. Confirmed false positive on a real filing (BPCL): 55
+# of 57 "distinct CINs" detected came from exactly this one note, none of
+# them evidence the document bundles another company's statements. Unlike
+# the other exclusion contexts above, this one needs a much larger FORWARD
+# window, not a small backward one -- it's a real disclosure table, not a
+# single heading-adjacent label, and BPCL's spans roughly 20,000 characters
+# and 55 rows past its heading.
+_STRUCK_OFF_HEADING = re.compile(r"struck[- ]off\s+compan", re.IGNORECASE)
+_STRUCK_OFF_TABLE_WINDOW = 25000
+
+# Two CIN strings this close together are far more likely to be the SAME
+# real CIN garbled by OCR into slightly different digit strings than two
+# genuinely different companies -- confirmed on two real scanned filings
+# (NPCI FY24-25, FY25-26): every "extra" CIN the raw pattern found was
+# within edit distance 1-2 of the one CIN that actually appears as the
+# running page header throughout the document (visually verified, no
+# second CIN exists in either filing). Classic OCR digit confusions (0/9,
+# 8/3, 6/5) account for every variant. A real second entity's CIN has no
+# reason to be a near-miss of the first company's -- CINs are assigned
+# independently, so two truly different companies' CINs colliding by
+# chance within this distance is effectively impossible.
+_CIN_OCR_CLUSTER_DISTANCE = 2
 
 
 # Rule 11(g) of the Companies (Audit and Auditors) Rules, 2014 (a separate
@@ -208,28 +278,62 @@ def check_cwip_ready_not_capitalized(full_text: str) -> AuditFlag | None:
 # section: "...which have led to significant diminution in value of BPRL's
 # assets vis-à-vis the previous year and consequent trigger for
 # impairment... the Corporation's investment in the same."
+#
+# The bare phrase match alone is NOT enough, though -- independently
+# verified false positives on 3 real filings (NPCI FY24-25, NPCI FY25-26,
+# Union AMC), all firing on standard Schedule III/AS-13 boilerplate that
+# uses these exact words without any actual diminution occurring: the
+# mandatory disclosure LABEL "Aggregate provision for diminution in value
+# of Investments" (present in every investments note, typically with a nil
+# value, followed immediately by an unrelated "no ECL needed" sentence on
+# sovereign securities in both NPCI filings), and the AS-13 accounting
+# POLICY sentence "...provision for diminution ... in value, if any ...
+# recognized in the Profit & Loss Account" (Union AMC) -- a description of
+# the accounting method, not a disclosed event. Both boilerplate forms
+# describe what WOULD happen or what the disclosure line IS, never that it
+# DID happen. The confirmed real BPCL wording uses an explicit
+# actual-occurrence verb phrase ("have led to", "consequent trigger for")
+# that the boilerplate forms never do -- require one nearby before trusting
+# the match, and separately reject the bare "if any" hedge that only
+# appears in the policy-description form.
 _INVESTMENT_DIMINUTION = re.compile(
     r"diminution\s+in\s+(?:the\s+)?value[^.]{0,250}?investment|"
     r"investment[^.]{0,250}?diminution\s+in\s+(?:the\s+)?value",
     re.IGNORECASE,
 )
+_DIMINUTION_POLICY_HEDGE = re.compile(r"\bif\s+any\b", re.IGNORECASE)
+_DIMINUTION_ACTUAL_OCCURRENCE = re.compile(
+    r"(?:has|have|had)\s+(?:led\s+to|resulted\s+in|been\s+(?:recognized|provided|written))|"
+    r"resulted\s+in\s+(?:a\s+)?diminution|"
+    r"trigger(?:ed)?\s+(?:for|an?)\s+impairment|"
+    r"impairment\s+loss\s+of|written\s+down\s+by|"
+    r"provi(?:sion|ded)\s+(?:of|for|amounting\s+to)\s+(?:rs\.?|₹|inr)\s*[\d,]",
+    re.IGNORECASE,
+)
+_DIMINUTION_CONTEXT_WINDOW = 200
 
 
 def check_investment_diminution(full_text: str) -> AuditFlag | None:
     """See module comment above _INVESTMENT_DIMINUTION."""
-    match = _INVESTMENT_DIMINUTION.search(full_text)
-    if not match:
-        return None
-    excerpt = re.sub(r"\s+", " ", full_text[max(0, match.start() - 150): match.end() + 200]).strip()
-    return AuditFlag(
-        flag_id="INVESTMENT_DIMINUTION_INDICATOR",
-        area="Investments in Subsidiaries / Associates / Joint Ventures",
-        severity="High",
-        evidence={"excerpt": excerpt},
-        note_ids=[],
-        standard_query="diminution in value impairment investment subsidiary associate joint venture Ind AS 28 Ind AS 36",
-        triggered_by="Filing discloses a diminution in value / impairment trigger for an investment in a subsidiary, associate, or joint venture",
-    )
+    for match in _INVESTMENT_DIMINUTION.finditer(full_text):
+        window_lo = max(0, match.start() - _DIMINUTION_CONTEXT_WINDOW)
+        window_hi = match.end() + _DIMINUTION_CONTEXT_WINDOW
+        window = full_text[window_lo:window_hi]
+        if _DIMINUTION_POLICY_HEDGE.search(window):
+            continue
+        if not _DIMINUTION_ACTUAL_OCCURRENCE.search(window):
+            continue
+        excerpt = re.sub(r"\s+", " ", full_text[max(0, match.start() - 150): match.end() + 200]).strip()
+        return AuditFlag(
+            flag_id="INVESTMENT_DIMINUTION_INDICATOR",
+            area="Investments in Subsidiaries / Associates / Joint Ventures",
+            severity="High",
+            evidence={"excerpt": excerpt},
+            note_ids=[],
+            standard_query="diminution in value impairment investment subsidiary associate joint venture Ind AS 28 Ind AS 36",
+            triggered_by="Filing discloses a diminution in value / impairment trigger for an investment in a subsidiary, associate, or joint venture",
+        )
+    return None
 
 
 # "fraud" alone is a routine word in every auditor's report -- it appears in
@@ -244,29 +348,85 @@ def check_investment_diminution(full_text: str) -> AuditFlag | None:
 # Development Correspondents... only ₹24.85 lakh (27.6%) recovered"; KSDL
 # discloses an ongoing Karnataka Lokayukta police investigation into
 # raw-material tender/purchase irregularities.
+#
+# Even those narrower terms have their own confirmed false-positive shapes,
+# both independently verified on real filings:
+#  - "misappropriat*" also appears in the standard CARO/branch-audit
+#    ANNEXURE QUESTION TEMPLATE -- "Whether the Company has an effective
+#    system to deal with misappropriation/fraud cases..." (Chamundeshwari
+#    Electricity Supply) -- asking whether a control exists, not disclosing
+#    that anything happened.
+#  - "cbi" matches inside routine "Central Vigilance Commission (CVC) and
+#    Central Bureau of Investigation (CBI)" naming, in the context of an
+#    annual awareness-campaign description ("Vigilance Awareness Week...
+#    Vigilance Mechanism functions in accordance with...", BPCL) rather
+#    than an actual CBI inquiry into the company.
+# Both exclusion shapes are checked in the local window around each match;
+# a document can have multiple hits, so every one needs its own check
+# rather than stopping at the first (a real disclosure can sit after a
+# boilerplate one in reading order).
 _FRAUD_DISCLOSURE_TERMS = re.compile(
     r"embezzl\w*|misappropriat\w*|"
-    r"\blokayukta\b|\bsfio\b|enforcement\s+directorate|\bcbi\b|"
+    # "lokayukta" transliterates inconsistently across filings -- confirmed
+    # real spelling variant "Lokayuktha" (with a trailing h) on KSDL, which
+    # \blokayukta\b (exact spelling + word boundary) silently misses.
+    r"\blokayukt\w*|\bsfio\b|enforcement\s+directorate|\bcbi\b|"
     r"vigilance\s+(?:inquiry|investigation|enquiry)|police\s+investigation",
     re.IGNORECASE,
 )
+_FRAUD_TEMPLATE_QUESTION = re.compile(
+    # Just the fixed CARO clause 3(xi)(b) wording, without requiring the
+    # leading "whether" -- confirmed on a real filing (KSDL) that this
+    # exact clause gets restated a second time, as the auditor's answer,
+    # without "whether" ("...Company has an effective system to deal with
+    # misappropriation / fraud cases. There are no frauds..."), and the
+    # CARO Annexure table on that page is itself extraction-scrambled
+    # (columns interleaved), so requiring the two phrases to sit adjacent
+    # missed this instance. The clause wording alone -- question or
+    # restated answer -- is distinctive enough on its own; no genuine
+    # incident disclosure phrases things this way.
+    r"(?:an\s+)?effective\s+system\s+to\s+deal\s+with|"
+    r"no\s+frauds?\b[^.]{0,150}?(?:notic|report)|"
+    r"(?:not|never)\s+been\s+(?:notic|report)",
+    re.IGNORECASE,
+)
+_FRAUD_AWARENESS_CAMPAIGN = re.compile(
+    r"vigilance\s+awareness\s+week|central\s+vigilance\s+commission|"
+    r"vigilance\s+mechanism\s+functions\s+in\s+accordance|"
+    # "(VAW)" is the standard abbreviation for the CVC's annual nationwide
+    # Vigilance Awareness Week campaign, run at every PSU -- a reliable
+    # anchor even when the surrounding sentence is extraction-scrambled by
+    # a multi-column page layout the extractor's gutter detection didn't
+    # catch. Confirmed real case (BPCL): "Investigation (CBI). Week (VAW)
+    # was observed..." -- three unrelated paragraphs interleaved
+    # line-by-line, scattering "Vigilance"/"Awareness"/"Week" apart from
+    # each other so the contiguous-phrase patterns above miss it, but
+    # "(VAW)" itself survives the scrambling intact.
+    r"\(vaw\)",
+    re.IGNORECASE,
+)
+_FRAUD_CONTEXT_WINDOW = 350
 
 
 def check_fraud_investigation_disclosure(full_text: str) -> AuditFlag | None:
     """See module comment above _FRAUD_DISCLOSURE_TERMS."""
-    match = _FRAUD_DISCLOSURE_TERMS.search(full_text)
-    if not match:
-        return None
-    excerpt = re.sub(r"\s+", " ", full_text[max(0, match.start() - 150): match.start() + 350]).strip()
-    return AuditFlag(
-        flag_id="FRAUD_INVESTIGATION_DISCLOSURE",
-        area="Fraud / Regulatory Investigation Disclosure",
-        severity="High",
-        evidence={"excerpt": excerpt},
-        note_ids=[],
-        standard_query="fraud embezzlement misappropriation regulatory investigation CARO clause 11 SA 240",
-        triggered_by="Filing discloses an instance of fraud/embezzlement/misappropriation or a live regulatory/law-enforcement investigation",
-    )
+    for match in _FRAUD_DISCLOSURE_TERMS.finditer(full_text):
+        window_lo = max(0, match.start() - _FRAUD_CONTEXT_WINDOW)
+        window_hi = match.end() + _FRAUD_CONTEXT_WINDOW
+        window = full_text[window_lo:window_hi]
+        if _FRAUD_TEMPLATE_QUESTION.search(window) or _FRAUD_AWARENESS_CAMPAIGN.search(window):
+            continue
+        excerpt = re.sub(r"\s+", " ", full_text[max(0, match.start() - 150): match.start() + 350]).strip()
+        return AuditFlag(
+            flag_id="FRAUD_INVESTIGATION_DISCLOSURE",
+            area="Fraud / Regulatory Investigation Disclosure",
+            severity="High",
+            evidence={"excerpt": excerpt},
+            note_ids=[],
+            standard_query="fraud embezzlement misappropriation regulatory investigation CARO clause 11 SA 240",
+            triggered_by="Filing discloses an instance of fraud/embezzlement/misappropriation or a live regulatory/law-enforcement investigation",
+        )
+    return None
 
 
 # CARO clause 3(i)(c) requires reporting on immovable property whose title
@@ -399,13 +559,38 @@ def check_multi_entity_document(full_text: str) -> AuditFlag | None:
     figures under one label. Rather than repeat that silently, surface it
     as the loudest possible warning so every other observation in the
     report gets read with the right skepticism."""
-    cins = set()
+    struck_off_zones = [
+        (m.start(), m.start() + _STRUCK_OFF_TABLE_WINDOW)
+        for m in _STRUCK_OFF_HEADING.finditer(full_text)
+    ]
+
+    occurrence_counts: dict[str, int] = {}
     for m in _CIN_PATTERN.finditer(full_text):
+        if any(lo <= m.start() <= hi for lo, hi in struck_off_zones):
+            continue
         window_start = max(0, m.start() - _RELATED_PARTY_WINDOW)
         if _RELATED_PARTY_CONTEXT.search(full_text[window_start:m.start()]):
             continue
-        cins.add(m.group(0).upper())
-    cins = sorted(cins)
+        label_lo = max(0, m.start() - _ENTITY_TYPE_LABEL_WINDOW)
+        label_hi = m.end() + _ENTITY_TYPE_LABEL_WINDOW
+        if _ENTITY_TYPE_LABEL.search(full_text[label_lo:label_hi]):
+            continue
+        cin = m.group(0).upper()
+        occurrence_counts[cin] = occurrence_counts.get(cin, 0) + 1
+
+    # Cluster near-duplicate CINs (see _CIN_OCR_CLUSTER_DISTANCE) so OCR
+    # noise on repeats of the SAME real CIN doesn't inflate the distinct
+    # count. Most-frequent CIN first, so the genuine page-header CIN (which
+    # recurs many times) anchors its cluster and absorbs its own garbled
+    # variants (which each typically appear only once or twice).
+    by_frequency = sorted(occurrence_counts, key=lambda c: -occurrence_counts[c])
+    cluster_reps: list[str] = []
+    for cin in by_frequency:
+        if any(Levenshtein.distance(cin, rep) <= _CIN_OCR_CLUSTER_DISTANCE for rep in cluster_reps):
+            continue
+        cluster_reps.append(cin)
+    cins = sorted(cluster_reps)
+
     if len(cins) > 1:
         return AuditFlag(
             flag_id="MULTI_ENTITY_DOCUMENT",

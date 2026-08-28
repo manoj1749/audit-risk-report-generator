@@ -229,7 +229,19 @@ def parse_cwip_ageing(table: TableData) -> CWIPAgeing | None:
                 if any(fuzz.partial_ratio(header.lower(), alias) > 70 for alias in aliases):
                     col_to_bucket[i] = bucket
                     break
-        if not col_to_bucket:
+        # A genuine Schedule III CWIP ageing table always carries multiple
+        # of these 4 fixed bucket columns -- matching only one is the
+        # signature of a wrong table entirely, not a real ageing schedule
+        # missing a bucket. Confirmed real false positive (Bank of India
+        # Investment Managers): a single stray column header fuzzy-matched
+        # one bucket alias on a table that was really a date-range/period
+        # heading ("...from 1 April 2023..."), fabricating a nonexistent
+        # CWIP project ("from 1 April", amount 2023 -- the year, misread as
+        # a rupee figure). The sibling ageing parsers
+        # (parse_trade_receivables_ageing, parse_trade_payables_ageing)
+        # already guard on this same "at least 2 buckets matched"
+        # threshold; this parser was missing it.
+        if len(col_to_bucket) < 2:
             return None
 
         total_col = _find_total_col(table.headers)

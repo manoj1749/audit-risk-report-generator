@@ -1,4 +1,6 @@
 """Threshold-based flag generation. Every rule null-checks before arithmetic."""
+import re
+
 from models.financial import (
     ContingentLiabilities,
     CSRDetails,
@@ -77,7 +79,45 @@ def check_first_occurrence_material(movements: dict[str, MovementRecord], total_
     return flags
 
 
-def check_cfo_pat_divergence(cfo: float | None, pat: float | None) -> AuditFlag | None:
+# For a lending institution (NBFC/HFC), loan disbursements to customers are
+# classified as an OPERATING cash outflow under Ind AS 7, so a growing loan
+# book structurally produces deeply negative operating cash flow every
+# year regardless of profitability -- not an earnings-quality problem the
+# way it is for a non-lender. Confirmed false positive on a real filing
+# (BOBCARD, a credit-card NBFC): CFO was deeply negative both years
+# (-12,527 / -18,409) purely from loan-book growth while PAT was solidly
+# positive both years -- textbook business-as-usual for a lender, not
+# divergence worth flagging.
+# Confirmed real self-description wording uses "Finance", not "Financial"
+# (BOBCARD: "...a Non-Deposit accepting Systemically Important Non-Banking
+# Finance Company ('NBFC-ND-SI'), holding a Certificate of Registration
+# from..."), so the full-phrase branch needs to match both spellings.
+_LENDING_INSTITUTION_MARKERS = re.compile(
+    r"non-?banking\s+financ(?:e|ial)\s+compan\w*|\bnbfc\b|housing\s+finance\s+compan\w*",
+    re.IGNORECASE,
+)
+# A bare "NBFC" is also the standard way every company's MSMED/borrowings
+# note enumerates its LOAN SOURCES ("Long term loans - banks/NBFC/others"),
+# not a self-description -- confirmed false positive on a real filing
+# (Chamundeshwari Electricity Supply, a discom, not a lender): the only
+# "NBFC" hits in the whole document are two of these loan-category table
+# rows. A genuine self-description never lists NBFC as a bare alternative
+# immediately next to "bank(s)" like this.
+_NBFC_AS_LENDER_CATEGORY = re.compile(r"banks?[\s,/]{0,3}nbfc|nbfc[\s,/]{0,3}(?:banks?|others?)", re.IGNORECASE)
+
+
+def _is_lending_institution(full_text: str) -> bool:
+    for m in _LENDING_INSTITUTION_MARKERS.finditer(full_text):
+        window = full_text[max(0, m.start() - 30): m.end() + 30]
+        if _NBFC_AS_LENDER_CATEGORY.search(window):
+            continue
+        return True
+    return False
+
+
+def check_cfo_pat_divergence(cfo: float | None, pat: float | None, full_text: str = "") -> AuditFlag | None:
+    if _is_lending_institution(full_text):
+        return None
     if pat and pat > 0 and cfo is not None and cfo < pat * 0.6:
         return AuditFlag(
             flag_id="CFO_PAT_DIVERGENCE",
@@ -454,6 +494,18 @@ _MATERIAL_MOVEMENT_EXCLUDED_KEYS = {
     "total_non_current_liabilities", "trade_receivables", "revenue_from_operations",
     "trade_payables_mse", "trade_payables_others", "share_of_jv_profit",
     "tax_prior_years", "current_tax", "cfo", "pat",
+    # opening_cash, closing_cash and net_cash_change are arithmetically
+    # downstream of cfo + cfi + cff (opening + cfo + cfi + cff = closing;
+    # net_cash_change = cfo + cfi + cff -- see check_cashflow_reconciliation
+    # above), not independent risk signals -- confirmed redundant on 3 real
+    # filings (stockholding-services 6 of 9 flags, BPCL 11 of 17, BOBCARD 3
+    # of 7): one financing/investing event (a rights issue, an equity
+    # raise) mechanically moves all three together with cfi/cff, and each
+    # got counted as its own separate observation. cfi and cff stay
+    # included -- investing vs. financing activity are genuinely distinct
+    # economic events, each worth its own flag; it's specifically their
+    # downstream arithmetic consequences that shouldn't also fire.
+    "opening_cash", "closing_cash", "net_cash_change",
 }
 
 _MATERIAL_MOVEMENT_THRESHOLD = 20.0
@@ -529,6 +581,7 @@ def generate_all_flags(
     mapped_items: dict[str, MappedLineItem],
     structured_tables: StructuredTables,
     notes: dict[str, NoteSection],
+    full_text: str = "",
 ) -> list[AuditFlag]:
     """Apply every flag rule and collect every flag that triggers."""
     flags: list[AuditFlag] = []
@@ -547,7 +600,7 @@ def generate_all_flags(
     high_checks = [
         check_cash_decline(movements, total_assets),
         check_negative_net_worth(movements),
-        check_cfo_pat_divergence(cfo, pat),
+        check_cfo_pat_divergence(cfo, pat, full_text),
         check_rou_material_increase(movements, total_assets),
         check_contingent_liability_jump(structured_tables.contingent_liabilities, total_equity),
         check_other_financial_assets_surge(movements, total_assets),
