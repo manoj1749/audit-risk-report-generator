@@ -68,6 +68,26 @@ SERVICE_NAME="${SERVICE_NAME:-audit-risk-report-generator}"
 # bandwidth is several times a CPU's, which is what actually removes this
 # bottleneck rather than just adding contention for it.
 #
+# OCR_N_WORKERS=4: unlike LOCAL_LLM_N_WORKERS above, this is a genuinely
+# different workload -- PaddleOCR's CNN inference is compute-bound, not
+# memory-bandwidth-bound, so it doesn't hit the same wall multiple LLM
+# instances did. Confirmed real motivating case: ksdl-44th-annual-report
+# (105 pages, 62 needing OCR) consistently ran past Cloud Run's hard 3600s
+# request-timeout ceiling (a platform maximum for Cloud Run services, not
+# configurable higher) at ~35-50s/page sequentially -- OCR alone could
+# take 35-50 minutes before the rest of the pipeline even started. The
+# parallel path already existed in pdf_extractor.py (ProcessPoolExecutor)
+# but was never enabled: config.py's OCR_N_WORKERS defaults to 1, and
+# nothing here overrode it before now. Set to 4, not 8, deliberately
+# leaving headroom -- each worker is a separate PROCESS that builds its
+# own full PaddleOCR engine (doc-orientation, unwarping, textline-
+# orientation, detection, recognition models each), multiplying memory
+# use by worker count, unlike the shared-nothing-cheap LLM thread case.
+# This runs before the LLM/embedding models are loaded (extraction is an
+# earlier pipeline stage), so there's real headroom against the 32Gi
+# ceiling during this phase specifically, but hasn't been stress-tested
+# at 8 concurrent full OCR engines.
+#
 # concurrency=10, NOT 1: Gradio's frontend polls /gradio_api/app_id
 # periodically as a heartbeat to detect server restarts. At concurrency=1,
 # that heartbeat can never get a request slot while the one instance is busy
@@ -132,7 +152,7 @@ gcloud run deploy "$SERVICE_NAME" \
     --cpu 8 \
     --memory 32Gi \
     --gpu=0 \
-    --set-env-vars LOCAL_LLM_N_THREADS=8,REPORTS_BUCKET=audit-risk-reports-368675610715 \
+    --set-env-vars LOCAL_LLM_N_THREADS=8,REPORTS_BUCKET=audit-risk-reports-368675610715,OCR_N_WORKERS=4 \
     --concurrency 10 \
     --timeout 3600 \
     --min-instances 0 \
