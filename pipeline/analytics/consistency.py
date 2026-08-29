@@ -51,6 +51,12 @@ _RELATED_PARTY_CONTEXT = re.compile(
     # directly to a director's personal charitable foundation, cited in his
     # bio.
     r"charitable\s+(?:trust|foundation)|\bfoundation\b|"
+    # An independent third-party BRSR/sustainability assurance provider is
+    # routinely cited by name and CIN in that disclosure -- confirmed false
+    # positive (ONGC): "Name of Assurance Provider ... Bureau Veritas
+    # (U74210MH2001PTC134262)". Not a subsidiary, not bundled financials --
+    # an external auditor-like party for one specific disclosure.
+    r"assurance\s+provider|"
     # CARO's "other auditors' report on components" clause, and a group's
     # mandatory Rule 5/AOC-1 "particulars of subsidiaries, associates and
     # joint ventures" schedule, both routinely cite a subsidiary/associate/
@@ -564,18 +570,40 @@ def check_multi_entity_document(full_text: str) -> AuditFlag | None:
         for m in _STRUCK_OFF_HEADING.finditer(full_text)
     ]
 
-    occurrence_counts: dict[str, int] = {}
+    def _in_struck_off_zone(pos: int) -> bool:
+        return any(lo <= pos <= hi for lo, hi in struck_off_zones)
+
+    # First pass: a CIN mentioned near a subsidiary/associate/JV label
+    # ANYWHERE in the document is established as belonging to a group
+    # entity -- confirmed real case (ONGC): the same subsidiary's CIN
+    # (ONGC Petro additions Limited) appears once next to "Subsidiary
+    # Company" in a CARO components table (excluded correctly) and again,
+    # elsewhere, in an unrelated sentence about the ROC reissuing its CIN
+    # ("...has issued new Corporate Identification Number (CIN) i.e.
+    # 'U23209GJ2006GOI060282'") with no entity-type label nearby at all.
+    # Checking each occurrence in isolation let that second mention count
+    # as a "new" undetected entity even though the first mention already
+    # identified it as a known subsidiary. Once established, exclude every
+    # occurrence of that CIN, not just the ones sitting next to the label.
+    known_group_entity_cins: set[str] = set()
     for m in _CIN_PATTERN.finditer(full_text):
-        if any(lo <= m.start() <= hi for lo, hi in struck_off_zones):
-            continue
-        window_start = max(0, m.start() - _RELATED_PARTY_WINDOW)
-        if _RELATED_PARTY_CONTEXT.search(full_text[window_start:m.start()]):
+        if _in_struck_off_zone(m.start()):
             continue
         label_lo = max(0, m.start() - _ENTITY_TYPE_LABEL_WINDOW)
         label_hi = m.end() + _ENTITY_TYPE_LABEL_WINDOW
         if _ENTITY_TYPE_LABEL.search(full_text[label_lo:label_hi]):
+            known_group_entity_cins.add(m.group(0).upper())
+
+    occurrence_counts: dict[str, int] = {}
+    for m in _CIN_PATTERN.finditer(full_text):
+        if _in_struck_off_zone(m.start()):
             continue
         cin = m.group(0).upper()
+        if cin in known_group_entity_cins:
+            continue
+        window_start = max(0, m.start() - _RELATED_PARTY_WINDOW)
+        if _RELATED_PARTY_CONTEXT.search(full_text[window_start:m.start()]):
+            continue
         occurrence_counts[cin] = occurrence_counts.get(cin, 0) + 1
 
     # Cluster near-duplicate CINs (see _CIN_OCR_CLUSTER_DISTANCE) so OCR
