@@ -1,6 +1,7 @@
 """PDF and image extraction: pdfplumber for typed PDFs, PaddleOCR fallback for
 scanned PDFs and for standalone image uploads (JPG/PNG/etc.)."""
 import re
+import threading
 import time
 
 import pdfplumber
@@ -11,6 +12,26 @@ from models.financial import ExtractedDocument, PageContent, TableData
 from utils.text_utils import detect_company_name, detect_period
 
 _ocr_engine = None
+
+# Serializes OCR across concurrent requests on the SAME Cloud Run instance --
+# mirrors observation_gen.py's _generation_lock/_model_load_lock pattern for
+# the same reason. OCR_N_WORKERS>1 spawns that many full PaddleOCR engine
+# processes (each with its own doc-orientation/detection/recognition models);
+# with no lock, two overlapping requests on one instance could each spin up
+# their own pool at the same time, multiplying memory/CPU use unboundedly.
+# Confirmed as a real production failure mode, not just a theoretical risk:
+# overnight concurrent testing (2026-09-06/07) produced a PaddlePaddle-level
+# "FatalError: Termination signal is detected by the operating system" C++
+# crash, plus several scanned-PDF requests that failed fast with no server-
+# side traceback at all (consistent with a sibling OCR pool starving/killing
+# them) -- and separately, real user-submitted scanned filings (Union
+# Trustee, NESL ADL, NESL E-Infra) came back as "not able to read the
+# document" on the live service that same night, while the identical files
+# extracted cleanly here locally with OCR_N_WORKERS at its default of 1 (no
+# contention). This only serializes the OCR *stage* within one instance --
+# it does not limit throughput across the up to 3 separate Cloud Run
+# instances, each with its own independent memory budget.
+_ocr_lock = threading.Lock()
 
 # Text-line table-reconstruction fallback (see _reconstruct_table_from_text):
 # a bare 1-2 digit integer with no comma/decimal reads as a note reference
@@ -425,7 +446,8 @@ def _extract_typed_pdf(pdf_path: str) -> list[PageContent]:
                 # visible the same way the full-OCR path already is.
                 page_t0 = time.time()
                 image = page.to_image(resolution=200).original
-                ocr_text = _ocr_image_to_text(image)
+                with _ocr_lock:
+                    ocr_text = _ocr_image_to_text(image)
                 if len(ocr_text.strip()) > len(raw_text.strip()):
                     raw_text = ocr_text
                     ocr = True
@@ -484,44 +506,45 @@ def _extract_scanned_pdf(pdf_path: str) -> list[PageContent]:
     logger.info(f"OCR: {total} page(s) to process (previously silent — no per-page progress at all)")
 
     n_workers = config.OCR_N_WORKERS
-    if n_workers <= 1:
-        pages: list[PageContent] = []
-        for i in range(1, total + 1):
-            page_t0 = time.time()
-            # One page at a time, not the whole document up front: rendering
-            # every page's image buffer simultaneously before OCR even
-            # starts (the previous behavior) is real, avoidable memory
-            # pressure on a many-page scan — confirmed contributing to a
-            # silent OOM-pattern kill on a real ~40-page filing.
-            [image] = convert_from_path(pdf_path, dpi=200, first_page=i, last_page=i)
-            text = _ocr_image_to_text(image)
-            pages.append(
-                PageContent(page_num=i, raw_text=text, tables=[], ocr=True)
-            )
-            logger.info(f"OCR: page {i}/{total} done in {time.time() - page_t0:.1f}s")
-        return pages
+    with _ocr_lock:
+        if n_workers <= 1:
+            pages: list[PageContent] = []
+            for i in range(1, total + 1):
+                page_t0 = time.time()
+                # One page at a time, not the whole document up front: rendering
+                # every page's image buffer simultaneously before OCR even
+                # starts (the previous behavior) is real, avoidable memory
+                # pressure on a many-page scan — confirmed contributing to a
+                # silent OOM-pattern kill on a real ~40-page filing.
+                [image] = convert_from_path(pdf_path, dpi=200, first_page=i, last_page=i)
+                text = _ocr_image_to_text(image)
+                pages.append(
+                    PageContent(page_num=i, raw_text=text, tables=[], ocr=True)
+                )
+                logger.info(f"OCR: page {i}/{total} done in {time.time() - page_t0:.1f}s")
+            return pages
 
-    # Parallel path (config.OCR_N_WORKERS > 1): PaddleOCR's CNN inference is
-    # compute-bound, unlike LLM decoding (memory-bandwidth-bound, confirmed
-    # not to benefit from multiple instances — see config.py's
-    # LOCAL_LLM_N_WORKERS comment), so this is worth testing independently
-    # rather than assuming that earlier negative result carries over.
-    from concurrent.futures import ProcessPoolExecutor, as_completed
+        # Parallel path (config.OCR_N_WORKERS > 1): PaddleOCR's CNN inference is
+        # compute-bound, unlike LLM decoding (memory-bandwidth-bound, confirmed
+        # not to benefit from multiple instances — see config.py's
+        # LOCAL_LLM_N_WORKERS comment), so this is worth testing independently
+        # rather than assuming that earlier negative result carries over.
+        from concurrent.futures import ProcessPoolExecutor, as_completed
 
-    texts: dict[int, str] = {}
-    done = 0
-    with ProcessPoolExecutor(max_workers=n_workers) as pool:
-        futures = [pool.submit(_ocr_one_page, pdf_path, i) for i in range(1, total + 1)]
-        for future in as_completed(futures):
-            page_num, text, elapsed = future.result()
-            texts[page_num] = text
-            done += 1
-            logger.info(f"OCR: page {page_num}/{total} done in {elapsed:.1f}s ({done}/{total} complete)")
+        texts: dict[int, str] = {}
+        done = 0
+        with ProcessPoolExecutor(max_workers=n_workers) as pool:
+            futures = [pool.submit(_ocr_one_page, pdf_path, i) for i in range(1, total + 1)]
+            for future in as_completed(futures):
+                page_num, text, elapsed = future.result()
+                texts[page_num] = text
+                done += 1
+                logger.info(f"OCR: page {page_num}/{total} done in {elapsed:.1f}s ({done}/{total} complete)")
 
-    return [
-        PageContent(page_num=i, raw_text=texts[i], tables=[], ocr=True)
-        for i in range(1, total + 1)
-    ]
+        return [
+            PageContent(page_num=i, raw_text=texts[i], tables=[], ocr=True)
+            for i in range(1, total + 1)
+        ]
 
 
 def extract_pdf(pdf_path: str) -> ExtractedDocument:
@@ -560,7 +583,8 @@ def extract_image(image_path: str) -> ExtractedDocument:
     from PIL import Image
 
     image = Image.open(image_path).convert("RGB")
-    text = _ocr_image_to_text(image)
+    with _ocr_lock:
+        text = _ocr_image_to_text(image)
 
     return ExtractedDocument(
         pages=[PageContent(page_num=1, raw_text=text, tables=[], ocr=True)],
