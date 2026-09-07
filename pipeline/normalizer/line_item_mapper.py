@@ -9,7 +9,7 @@ import config
 from models.financial import ExtractedDocument, MappedLineItem, NoteSection, TableData
 from pipeline.extractor.excel_extractor import extract_excel
 from pipeline.normalizer.schema import CANONICAL_SCHEMA
-from utils.text_utils import clean_label, extract_note_ref, parse_indian_number
+from utils.text_utils import NIL_TOKENS, clean_label, extract_note_ref, parse_indian_number
 
 _FACE_STATEMENT_SHEET_TYPES = {"balance_sheet", "pnl", "cash_flow"}
 _NOTE_COLUMN_HEADER_PATTERN = re.compile(r"^(note|notes|schedule|schedules)\s*(no\.?|number)?$", re.IGNORECASE)
@@ -182,7 +182,7 @@ def _parse_table_rows(table: TableData) -> list[tuple[str, float | None, float |
             continue
 
         note_ref = extract_note_ref(label)
-        numeric_values: list[float] = []
+        numeric_values: list[float | None] = []
         for i, cell in enumerate(row):
             if i == 0:
                 continue
@@ -192,14 +192,27 @@ def _parse_table_rows(table: TableData) -> list[tuple[str, float | None, float |
                 continue
             if cell is None:
                 continue
+            cell_text = str(cell).strip()
             val = parse_indian_number(cell)
             if val is None:
-                val = _recover_split_leading_digit(str(cell))
+                val = _recover_split_leading_digit(cell_text)
             if val is not None:
                 numeric_values.append(val)
+            elif cell_text in NIL_TOKENS:
+                # A genuine "nil" placeholder ("-", "N/A", ...) still occupies
+                # a real value column, just with no figure disclosed -- it
+                # must hold its column position (as None) rather than being
+                # dropped, or a real prior-period figure sitting right after
+                # it silently shifts into the current-period slot instead.
+                # Confirmed on a real filing (NIPL's cash flow statement):
+                # financing activities showed "-" (2025) then "10,000.00"
+                # (2024); dropping the "-" read the 2024 figure as this
+                # year's, flagging a genuine prior-year line as a brand-new
+                # "first occurrence this year".
+                numeric_values.append(None)
             elif note_ref is None:
-                maybe_ref = extract_note_ref(str(cell))
-                if maybe_ref and len(str(cell).strip()) <= 6:
+                maybe_ref = extract_note_ref(cell_text)
+                if maybe_ref and len(cell_text) <= 6:
                     note_ref = maybe_ref
 
         current = numeric_values[0] if len(numeric_values) >= 1 else None

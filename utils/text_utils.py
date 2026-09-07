@@ -6,6 +6,12 @@ from loguru import logger
 _CURRENCY_SYMBOLS = ["₹", "Rs.", "Rs", "INR"]
 _NUMBER_CLEAN_PATTERN = re.compile(r"[^\d.\-]")
 
+# Common "nil" placeholders in Indian financial statements. Exposed (not just
+# inlined in parse_indian_number) so callers that need to tell "genuinely nil"
+# apart from "this cell isn't a value at all" can reuse the exact same set —
+# see line_item_mapper._parse_table_rows for why that distinction matters.
+NIL_TOKENS = {"-", "–", "—", "NIL", "Nil", "N/A", "NA", "n/a"}
+
 
 def parse_indian_number(s: str | float | int | None) -> float | None:
     """Parse a monetary string into a float.
@@ -24,7 +30,7 @@ def parse_indian_number(s: str | float | int | None) -> float | None:
         return None
 
     # Common "nil" placeholders in Indian financial statements
-    if text in {"-", "–", "—", "NIL", "Nil", "N/A", "NA", "n/a"}:
+    if text in NIL_TOKENS:
         return None
 
     for sym in _CURRENCY_SYMBOLS:
