@@ -452,6 +452,14 @@ def _extract_typed_pdf(pdf_path: str) -> list[PageContent]:
                     raw_text = ocr_text
                     ocr = True
                     ocr_fallback_pages.append(i + 1)
+                    # The page was blank at the typed-extraction pass above,
+                    # so `tables` is still whatever pdfplumber found on an
+                    # empty page (nothing) — reconstruct from the OCR text
+                    # now that there's real content, same as the full-scan
+                    # path (_extract_scanned_pdf) does.
+                    reconstructed = _reconstruct_table_from_text(raw_text, i + 1)
+                    if reconstructed:
+                        tables = [reconstructed]
                     logger.info(
                         f"OCR fallback: page {i + 1}/{total} (blank in typed extraction, "
                         f"had an embedded image) re-read in {time.time() - page_t0:.1f}s — "
@@ -518,8 +526,25 @@ def _extract_scanned_pdf(pdf_path: str) -> list[PageContent]:
                 # silent OOM-pattern kill on a real ~40-page filing.
                 [image] = convert_from_path(pdf_path, dpi=200, first_page=i, last_page=i)
                 text = _ocr_image_to_text(image)
+                # OCR never yields a pdfplumber-style cell grid, so a scanned
+                # financial-statement page previously always got tables=[] —
+                # meaning map_all_items (which only reads page.tables, see
+                # line_item_mapper.py) silently mapped ZERO line items for
+                # every scanned filing, no matter how clean the OCR text was.
+                # Confirmed on two real user-submitted filings (UBI Services,
+                # ICOM) that came back with a real flag or two from the
+                # text-based consistency checks but a completely empty
+                # movements/ratios table. Reuse the same text-line
+                # reconstruction already relied on for typed pages whose grid
+                # extraction fails (see _reconstruct_table_from_text) — OCR
+                # text has the same "label ... value value" line shape.
+                reconstructed = _reconstruct_table_from_text(text, i)
                 pages.append(
-                    PageContent(page_num=i, raw_text=text, tables=[], ocr=True)
+                    PageContent(
+                        page_num=i, raw_text=text,
+                        tables=[reconstructed] if reconstructed else [],
+                        ocr=True,
+                    )
                 )
                 logger.info(f"OCR: page {i}/{total} done in {time.time() - page_t0:.1f}s")
             return pages
@@ -542,7 +567,11 @@ def _extract_scanned_pdf(pdf_path: str) -> list[PageContent]:
                 logger.info(f"OCR: page {page_num}/{total} done in {elapsed:.1f}s ({done}/{total} complete)")
 
         return [
-            PageContent(page_num=i, raw_text=texts[i], tables=[], ocr=True)
+            PageContent(
+                page_num=i, raw_text=texts[i],
+                tables=([t] if (t := _reconstruct_table_from_text(texts[i], i)) else []),
+                ocr=True,
+            )
             for i in range(1, total + 1)
         ]
 
