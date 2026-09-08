@@ -713,7 +713,7 @@ _NOTE_KEYWORDS = {
     "trade_payables_ageing": (["payable", "creditors"], parse_trade_payables_ageing),
     "cwip_ageing": (["capital work-in-progress", "capital work in progress", "cwip"], parse_cwip_ageing),
     "ppe_depreciation": (["property, plant and equipment", "property plant and equipment"], parse_ppe_depreciation_rollforward),
-    "contingent_liabilities": (["contingent liabilit"], parse_contingent_liabilities),
+    "contingent_liabilities": (["contingent liability", "contingent liabilities"], parse_contingent_liabilities),
     "csr_details": (["corporate social responsibility", "csr"], parse_csr_details),
     "msmed_disclosure": (["micro", "small enterprise", "msme", "msmed"], parse_msmed_disclosure),
     "actuarial_assumptions": (["actuarial", "defined benefit"], parse_actuarial_assumptions),
@@ -732,7 +732,23 @@ def extract_all_tables(notes: dict[str, NoteSection]) -> StructuredTables:
         # (op-e-RATIO-ns), which wrongly selected an unrelated note as the
         # sole candidate and prevented the real fallback full-scan from ever
         # running.
-        keyword_patterns = [re.compile(r"\b" + re.escape(kw) + r"\b", re.IGNORECASE) for kw in keywords]
+        #
+        # The trailing \b alone over-corrected: a keyword written as the
+        # singular ("receivable", "payable", "ratio", "enterprise") never
+        # matches the plural heading real filings almost always use
+        # ("Receivables", "Payables", "Ratios", "Enterprises"), since \b
+        # can't land between the stem and a following "s" -- both are word
+        # characters. Confirmed on a real filing (NBBL): "contingent
+        # liabilit" matched neither "Contingent Liability" nor "Contingent
+        # Liabilities" (the singular's "y" and the plural's "ies" both fail
+        # the same way), so matched_notes came back empty, this fell through
+        # to the full-document fallback below, and a real Share Capital
+        # figure from an unrelated note got parsed as a contingent
+        # liability. An optional trailing "s" before the boundary covers
+        # plain pluralization; "contingent liabilit" additionally needs its
+        # own explicit y/ies forms in the keyword list rather than relying
+        # on the suffix pattern here.
+        keyword_patterns = [re.compile(r"\b" + re.escape(kw) + r"s?\b", re.IGNORECASE) for kw in keywords]
         matched_notes = [
             note for note in notes.values()
             if any(p.search(note.title + " " + note.raw_text[:200]) for p in keyword_patterns)
