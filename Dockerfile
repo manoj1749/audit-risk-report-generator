@@ -66,6 +66,19 @@ from sentence_transformers import SentenceTransformer; \
 SentenceTransformer('BAAI/bge-m3')"
 ENV LOCAL_LLM_MODEL_PATH=/app/models/qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf
 
+# PaddleOCR/PaddleX models were never pre-downloaded before -- every one of
+# them (det/rec/textline-orientation, and now the table-structure-
+# recognition models: layout detection, table classification, cell
+# detection, structure recognition) was fetched lazily on a cold instance's
+# first real OCR request instead. Just instantiating the pipelines (no
+# predict() call needed) triggers PaddleX's download-and-cache-to-disk, the
+# same as constructing them at request time would.
+RUN python -c "\
+import os; os.environ.setdefault('PADDLE_PDX_ENABLE_MKLDNN_BYDEFAULT', 'False'); \
+from paddleocr import PaddleOCR, TableRecognitionPipelineV2; \
+PaddleOCR(use_textline_orientation=True, use_doc_orientation_classify=False, use_doc_unwarping=False, text_detection_model_name='PP-OCRv6_small_det', text_recognition_model_name='PP-OCRv6_small_rec', lang='en'); \
+TableRecognitionPipelineV2(text_detection_model_name='PP-OCRv6_small_det', text_recognition_model_name='PP-OCRv6_small_rec', use_doc_orientation_classify=False, use_doc_unwarping=False)"
+
 # Application source last — this is the layer that actually changes on a
 # typical deploy, and it's cheap (a few MB of Python), so it belongs after
 # everything multi-GB above, not before it.

@@ -10,6 +10,11 @@ pdfplumber>=0.10.0
 pdf2image
 paddleocr
 paddlepaddle
+# [ocr] extra pulls in the table-structure-recognition models
+# (TableRecognitionPipelineV2) used as a fallback for OCR'd financial
+# statements whose label and values land on separate lines -- see
+# pipeline/extractor/pdf_extractor.py's _reconstruct_table_via_model.
+paddlex[ocr]
 Pillow
 
 # Excel / Word

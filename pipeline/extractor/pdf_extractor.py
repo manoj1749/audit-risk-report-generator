@@ -3,6 +3,7 @@ scanned PDFs and for standalone image uploads (JPG/PNG/etc.)."""
 import re
 import threading
 import time
+from html.parser import HTMLParser
 
 import pdfplumber
 from loguru import logger
@@ -12,6 +13,7 @@ from models.financial import ExtractedDocument, PageContent, TableData
 from utils.text_utils import detect_company_name, detect_period
 
 _ocr_engine = None
+_table_recognition_pipeline = None
 
 # Serializes OCR across concurrent requests on the SAME Cloud Run instance --
 # mirrors observation_gen.py's _generation_lock/_model_load_lock pattern for
@@ -212,6 +214,235 @@ def _reconstruct_table_from_text(text: str, page_num: int) -> TableData | None:
     if len(rows) < 5 or len(rows) / max(len(lines), 1) < 0.25:
         return None
     return TableData(headers=["Particulars", "Note", "Current", "Prior"], rows=rows, page_num=page_num)
+
+
+class _TableHTMLParser(HTMLParser):
+    """Minimal <table> parser: rows of cell text, colspan padded with empty
+    strings so column indices stay aligned with ungapped rows. Good enough
+    for the structurally-simple tables this is applied to -- no nested
+    tables, no rowspan (a genuinely merged multi-row cell is exactly the
+    case the caller rejects on purpose, see _conservative_table_from_html)."""
+
+    def __init__(self):
+        super().__init__()
+        self.rows: list[list[str]] = []
+        self._row: list[str] | None = None
+        self._cell: list[str] | None = None
+        self._colspan = 1
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "tr":
+            self._row = []
+        elif tag in ("td", "th"):
+            self._cell = []
+            self._colspan = 1
+            for key, val in attrs:
+                if key == "colspan":
+                    try:
+                        self._colspan = max(1, int(val))
+                    except (TypeError, ValueError):
+                        pass
+
+    def handle_endtag(self, tag):
+        if tag in ("td", "th") and self._row is not None and self._cell is not None:
+            text = " ".join(" ".join(self._cell).split())
+            self._row.append(text)
+            self._row.extend([""] * (self._colspan - 1))
+            self._cell = None
+        elif tag == "tr" and self._row is not None:
+            self.rows.append(self._row)
+            self._row = None
+
+    def handle_data(self, data):
+        if self._cell is not None:
+            self._cell.append(data)
+
+
+_TABLE_HEADER_YEAR_PATTERN = re.compile(r"(?:19|20)\d{2}")
+
+
+def _find_table_year_columns(rows: list[list[str]], header_scan_rows: int = 6) -> tuple[int, int] | None:
+    """Locate the (current-year, prior-year) column indices from a table's
+    header rows, requiring exactly two distinct years, each appearing in
+    exactly one column. This is the safety gate against a table whose
+    structure is too complex to trust automatically: a table with
+    supplementary quarterly columns alongside the two annual ones has 2+
+    columns sharing the same year, and gets rejected here rather than
+    guessed at (confirmed on a real filing, UBI Services: its detailed P&L
+    page mixes 3 quarterly columns with 2 annual ones and the table model's
+    own column/row structure came out visibly scrambled on that page, while
+    its simpler single-annual-column condensed summary page came out
+    clean -- this is what tells the two apart automatically).
+
+    Column 0 (the label column) is never scanned: a title row or CIN often
+    contains an incidental 4-digit substring that reads as a "year" (a real
+    CIN's own registration-year digits, e.g. "...MH1999GOI..."), which would
+    otherwise collide with a genuine date column and wrongly fail the
+    exactly-one-column-per-year check below."""
+    years_by_col: dict[int, int] = {}
+    for row in rows[:header_scan_rows]:
+        for col_idx, cell in enumerate(row):
+            if col_idx == 0:
+                continue
+            years = [int(y) for y in _TABLE_HEADER_YEAR_PATTERN.findall(cell or "")]
+            if years:
+                years_by_col[col_idx] = max(years_by_col.get(col_idx, 0), max(years))
+    distinct_years = sorted(set(years_by_col.values()), reverse=True)
+    if len(distinct_years) != 2:
+        return None
+    current_year, prior_year = distinct_years
+    current_cols = [c for c, y in years_by_col.items() if y == current_year]
+    prior_cols = [c for c, y in years_by_col.items() if y == prior_year]
+    if len(current_cols) != 1 or len(prior_cols) != 1:
+        return None
+    return current_cols[0], prior_cols[0]
+
+
+def _conservative_table_from_html(html: str, page_num: int) -> TableData | None:
+    """Build a TableData from a table-structure-recognition model's HTML
+    output, but only where every value cell is unambiguous. A borderless or
+    visually complex table can make the model merge more than one logical
+    line item into a single detected cell (confirmed on a real filing:
+    "INCOME" / "Revenue from operations" / "Other income" landing in one
+    cell together) -- guessing which of several space-separated numbers in
+    a merged cell belongs to which line risks shipping a wrong figure, so
+    any row with a multi-value cell is skipped outright rather than
+    guessed. This trades recall for correctness on purpose: a missing line
+    item is recoverable (a human notices and adds it), a wrong one usually
+    isn't."""
+    parser = _TableHTMLParser()
+    try:
+        parser.feed(html)
+    except Exception as e:
+        logger.debug(f"_conservative_table_from_html: HTML parse failed: {e}")
+        return None
+    rows = [r for r in parser.rows if any((c or "").strip() for c in r)]
+    if len(rows) < 5:
+        return None
+    year_cols = _find_table_year_columns(rows)
+    if year_cols is None:
+        return None
+    current_col, prior_col = year_cols
+
+    out_rows: list[list[str | None]] = []
+    for row in rows:
+        if current_col >= len(row) or prior_col >= len(row):
+            continue
+        label = (row[0] or "").strip()
+        if len(label) < 3 or not re.search(r"[A-Za-z]{3,}", label):
+            continue
+        current_cell = (row[current_col] or "").strip()
+        prior_cell = (row[prior_col] or "").strip()
+        if not (current_cell and _is_value_token(current_cell)):
+            continue
+        if not (prior_cell and _is_value_token(prior_cell)):
+            continue
+        note_ref = None
+        for idx, cell in enumerate(row):
+            if idx in (0, current_col, prior_col):
+                continue
+            candidate = (cell or "").strip()
+            if _is_note_ref_token(candidate):
+                note_ref = candidate
+                break
+        out_rows.append([label, note_ref, current_cell, prior_cell])
+
+    if len(out_rows) < 3:
+        return None
+    return TableData(headers=["Particulars", "Note", "Current", "Prior"], rows=out_rows, page_num=page_num)
+
+
+def _get_table_recognition_pipeline():
+    """Lazily initialize the table-structure-recognition pipeline. Heavier
+    than plain OCR (layout detection + table classification + cell
+    detection + structure recognition, on top of the same PP-OCRv6 det/rec
+    models) -- deliberately used only as a fallback for pages where the
+    cheap same-line text reconstruction already failed, and always run
+    sequentially under _ocr_lock from the main process (see
+    _reconstruct_table_via_model), never inside the parallel OCR worker
+    pool, so its larger memory footprint is bounded to one instance at a
+    time regardless of OCR_N_WORKERS."""
+    global _table_recognition_pipeline
+    if _table_recognition_pipeline is None:
+        import os
+
+        os.environ.setdefault("PADDLE_PDX_ENABLE_MKLDNN_BYDEFAULT", "False")
+        from paddleocr import TableRecognitionPipelineV2
+
+        _table_recognition_pipeline = TableRecognitionPipelineV2(
+            text_detection_model_name="PP-OCRv6_small_det",
+            text_recognition_model_name="PP-OCRv6_small_rec",
+            use_doc_orientation_classify=False,
+            use_doc_unwarping=False,
+        )
+    return _table_recognition_pipeline
+
+
+def _reconstruct_table_via_model(pdf_path: str, page_num: int) -> TableData | None:
+    from pdf2image import convert_from_path
+    import numpy as np
+
+    try:
+        pipeline = _get_table_recognition_pipeline()
+        [image] = convert_from_path(pdf_path, dpi=200, first_page=page_num, last_page=page_num)
+        results = pipeline.predict(np.array(image))
+    except Exception as e:
+        logger.warning(f"Table recognition model failed on page {page_num}: {e}")
+        return None
+    for res in results or []:
+        for table in res.get("table_res_list", []) or []:
+            html = table.get("pred_html")
+            if not html:
+                continue
+            parsed = _conservative_table_from_html(html, page_num)
+            if parsed:
+                return parsed
+    return None
+
+
+# Minimum count of value-shaped lines a page's OCR text must have before
+# the (expensive, ~5-20s/page) table-recognition model is worth trying at
+# all -- a pure-prose notes page (the bulk of a typical filing) has none
+# and would otherwise pay this cost on every single page for nothing.
+_MODEL_FALLBACK_MIN_VALUE_LINES = 5
+
+# Hard cap on how many pages get the model fallback per document, regardless
+# of how many clear the density filter above. Confirmed on a real large
+# scanned filing (ksdl, 105 pages): several pages are dense numeric
+# schedules/annexures with 30-50+ value-shaped lines each -- exactly what
+# the density filter is meant to catch -- but their layout is too complex
+# for the model's own conservative acceptance gate, so every one of them
+# still pays the full ~6-18s cost and finds nothing. Left uncapped, a
+# document with many such pages could push OCR past Cloud Run's 3600s
+# request ceiling for zero benefit. Pages are tried highest-density-first
+# so the cap is spent on the most plausible tables before it runs out.
+_MODEL_FALLBACK_MAX_PAGES = 25
+
+
+def _fill_missing_tables_via_model(pdf_path: str, pages: list[PageContent]) -> None:
+    """Second-level fallback, run once after all pages' text is OCR'd
+    (sequential or parallel), regardless of which path produced them: for
+    any page where the cheap same-line reconstruction found no table, try
+    the table-structure-recognition model. Always sequential in the main
+    process/thread -- never inside the ProcessPoolExecutor worker pool --
+    so this heavier model's memory footprint stays at one instance
+    regardless of OCR_N_WORKERS, and only pays its cost on the (typically
+    minority of) pages that plausibly contain a real table at all."""
+    candidates: list[tuple[int, PageContent]] = []
+    for page in pages:
+        if page.tables:
+            continue
+        value_line_count = sum(
+            1 for ln in page.raw_text.splitlines() if _is_value_token(ln.strip())
+        )
+        if value_line_count >= _MODEL_FALLBACK_MIN_VALUE_LINES:
+            candidates.append((value_line_count, page))
+    candidates.sort(key=lambda c: -c[0])
+
+    for _, page in candidates[:_MODEL_FALLBACK_MAX_PAGES]:
+        modeled = _reconstruct_table_via_model(pdf_path, page.page_num)
+        if modeled:
+            page.tables = [modeled]
 
 
 def _label_fill_ratio(rows: list[list]) -> float:
@@ -547,6 +778,7 @@ def _extract_scanned_pdf(pdf_path: str) -> list[PageContent]:
                     )
                 )
                 logger.info(f"OCR: page {i}/{total} done in {time.time() - page_t0:.1f}s")
+            _fill_missing_tables_via_model(pdf_path, pages)
             return pages
 
         # Parallel path (config.OCR_N_WORKERS > 1): PaddleOCR's CNN inference is
@@ -566,7 +798,7 @@ def _extract_scanned_pdf(pdf_path: str) -> list[PageContent]:
                 done += 1
                 logger.info(f"OCR: page {page_num}/{total} done in {elapsed:.1f}s ({done}/{total} complete)")
 
-        return [
+        pages = [
             PageContent(
                 page_num=i, raw_text=texts[i],
                 tables=([t] if (t := _reconstruct_table_from_text(texts[i], i)) else []),
@@ -574,6 +806,8 @@ def _extract_scanned_pdf(pdf_path: str) -> list[PageContent]:
             )
             for i in range(1, total + 1)
         ]
+        _fill_missing_tables_via_model(pdf_path, pages)
+        return pages
 
 
 def extract_pdf(pdf_path: str) -> ExtractedDocument:
