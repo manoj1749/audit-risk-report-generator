@@ -6,9 +6,8 @@
 # See deploy.sh for the request-a-quota-increase note if picking GPU back up.
 FROM python:3.11-slim
 
-# Same apt deps as HOSTING.md's Hugging Face path (packages.txt): libgl1/libglib2.0-0
-# for PaddleOCR, poppler-utils for pdf2image. unzip+curl are for the standards-index
-# fetch below.
+# libgl1/libglib2.0-0 for PaddleOCR, poppler-utils for pdf2image. unzip+curl
+# are for the standards-index fetch below.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libgl1 libglib2.0-0 libgomp1 poppler-utils unzip curl \
     build-essential cmake \

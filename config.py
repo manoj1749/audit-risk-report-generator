@@ -71,7 +71,7 @@ LOCAL_LLM_CTX_TOKENS = int(os.getenv("LOCAL_LLM_CTX_TOKENS", "4096"))
 # (e.g. match Cloud Run's --cpu flag); defaults to os.cpu_count() for local use.
 LOCAL_LLM_N_THREADS = int(os.getenv("LOCAL_LLM_N_THREADS", str(os.cpu_count() or 4)))
 # 0 = CPU-only (default — matches every existing llama.cpp deployment target,
-# e.g. HOSTING.md's Hugging Face Spaces free CPU tier, which has no GPU).
+# e.g. Cloud Run without --gpu, which has no GPU).
 # -1 = offload every layer to GPU. Only set to -1 where a GPU is actually
 # attached (e.g. Cloud Run's --gpu=1, via LOCAL_LLM_N_GPU_LAYERS in deploy.sh).
 LOCAL_LLM_N_GPU_LAYERS = int(os.getenv("LOCAL_LLM_N_GPU_LAYERS", "0"))
