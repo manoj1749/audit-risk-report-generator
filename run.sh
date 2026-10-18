@@ -85,6 +85,12 @@ echo "✅ Using $($PYTHON_BIN --version) ($PYTHON_BIN)"
 #     before touching pip at all. No-op on machines without the bug.
 "$PYTHON_BIN" scripts/fix_macos_mac_ver.py
 
+# 3c. Some Homebrew python@3.11 bottles were linked against a newer
+#     libexpat than the one the OS actually ships, breaking pyexpat —
+#     which pip's own code imports transitively, breaking every pip
+#     command. Fix it the same way: no-op on machines without the bug.
+"$PYTHON_BIN" scripts/fix_macos_pyexpat.py
+
 # 4. macOS system dep: poppler, needed by pdf2image for PDF-to-image conversion.
 if [[ "$(uname)" == "Darwin" ]]; then
     if ! command -v pdftoppm >/dev/null 2>&1; then
