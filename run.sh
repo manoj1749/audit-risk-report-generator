@@ -79,6 +79,12 @@ if [ -z "$PYTHON_BIN" ] || ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
 fi
 echo "✅ Using $($PYTHON_BIN --version) ($PYTHON_BIN)"
 
+# 3b. macOS 26 (Tahoe) can leave platform.mac_ver() returning all-empty
+#     values, which crashes pip>=24.2 (and therefore ensurepip/venv
+#     creation below) the moment it tries to build an SSL context. Fix it
+#     before touching pip at all. No-op on machines without the bug.
+"$PYTHON_BIN" scripts/fix_macos_mac_ver.py
+
 # 4. macOS system dep: poppler, needed by pdf2image for PDF-to-image conversion.
 if [[ "$(uname)" == "Darwin" ]]; then
     if ! command -v pdftoppm >/dev/null 2>&1; then
