@@ -114,7 +114,17 @@ if [ -d ".venv" ]; then
 fi
 if [ ! -d ".venv" ]; then
     echo "🐍 Creating virtual environment (.venv)..."
-    "$PYTHON_BIN" -m venv .venv
+    # On pip >=26.1, ensurepip's own self-install (installing a wheel
+    # literally named "pip" from loose files on sys.path) can trip pip's
+    # own post-CVE import guard and fail outright. If that happens, fall
+    # back to installing pip ourselves straight from a PyPI wheel —
+    # see scripts/bootstrap_pip.py for the full explanation.
+    if ! "$PYTHON_BIN" -m venv .venv; then
+        echo "⚠️  venv creation hit a known pip self-install bug — installing pip manually instead..."
+        rm -rf .venv
+        "$PYTHON_BIN" -m venv --without-pip .venv
+        "$PYTHON_BIN" scripts/bootstrap_pip.py .venv
+    fi
 fi
 # shellcheck disable=SC1091
 source .venv/bin/activate
