@@ -51,12 +51,20 @@ fi
 
 # 3. Pick a Python interpreter. paddlepaddle lags behind the newest CPython
 #    releases, so prefer 3.11/3.12 over whatever "python3" happens to be —
-#    installing it via Homebrew if nothing suitable exists yet.
+#    installing it via Homebrew if nothing suitable exists yet. gradio>=5.0.0
+#    also requires 3.10+, so a candidate is only accepted if it's actually
+#    new enough — macOS's own /usr/bin/python3 (3.9.x on many machines) must
+#    NOT win just because it exists; otherwise pip install fails deep into
+#    requirements.txt with a confusing "no matching distribution" error.
 PYTHON_BIN=""
 for candidate in python3.11 python3.12 python3; do
     if command -v "$candidate" >/dev/null 2>&1; then
-        PYTHON_BIN="$candidate"
-        break
+        ver="$("$candidate" -c 'import sys; print(f"{sys.version_info[0]}.{sys.version_info[1]}")' 2>/dev/null)"
+        major="${ver%%.*}"; minor="${ver##*.}"
+        if [ -n "$major" ] && [ "$major" -eq 3 ] 2>/dev/null && [ "$minor" -ge 10 ] 2>/dev/null; then
+            PYTHON_BIN="$candidate"
+            break
+        fi
     fi
 done
 if [ -z "$PYTHON_BIN" ] && command -v brew >/dev/null 2>&1; then
@@ -87,7 +95,17 @@ if [[ "$(uname)" == "Darwin" ]]; then
     fi
 fi
 
-# 5. Create / reuse the virtual environment.
+# 5. Create / reuse the virtual environment. A .venv built before this
+#    script checked interpreter versions may be stuck on a too-old Python
+#    (e.g. 3.9) — rebuild it in that case instead of silently reusing it.
+if [ -d ".venv" ]; then
+    venv_ver="$(.venv/bin/python -c 'import sys; print(f"{sys.version_info[0]}.{sys.version_info[1]}")' 2>/dev/null || echo "0.0")"
+    venv_major="${venv_ver%%.*}"; venv_minor="${venv_ver##*.}"
+    if ! { [ "$venv_major" -eq 3 ] 2>/dev/null && [ "$venv_minor" -ge 10 ] 2>/dev/null; }; then
+        echo "🐍 Existing .venv uses Python $venv_ver (too old) — rebuilding with $($PYTHON_BIN --version)..."
+        rm -rf .venv
+    fi
+fi
 if [ ! -d ".venv" ]; then
     echo "🐍 Creating virtual environment (.venv)..."
     "$PYTHON_BIN" -m venv .venv
